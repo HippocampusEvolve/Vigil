@@ -11,7 +11,24 @@ import { CLEARING, ENTRY_LAMP, WAKE_POINT } from '../src/world/layout'
 const RATE = 48000
 
 /** Петли, которые играются по кругу: у них не должно быть стыка. */
-const LOOPS: BankName[] = ['leavesL', 'leavesR', 'concreteL', 'concreteR', 'curtain', 'stream', 'engine', 'brown', 'wander']
+const LOOPS: BankName[] = [
+  'leavesL',
+  'leavesR',
+  'concreteL',
+  'concreteR',
+  'curtain',
+  'stream',
+  'engine',
+  'brown',
+  'wander',
+  'roofL',
+  'roofR',
+  'hum',
+  'phyto',
+  'starter',
+  'clock',
+  'pump',
+]
 
 /** Счёт целиком, порциями по 4 мс, как из кадра. Возвращает самую долгую порцию. */
 function bakeAll() {
@@ -36,7 +53,7 @@ test('счёт режется на порции: самая долгая не д
 
 test('всё посчитано и конечно', () => {
   assert.equal(bank.pending, 0)
-  for (const name of [...LOOPS, 'white', 'drops', 'irForest', 'irPost', 'irLower'] as BankName[]) {
+  for (const name of [...LOOPS, 'white', 'drops', 'bucket', 'steel', 'irForest', 'irPost', 'irLower'] as BankName[]) {
     const data = bank.data(name)
     assert.ok(data && data.length > 0, `${name}: пусто`)
     for (const d of data) for (let i = 0; i < d.length; i++) assert.ok(Number.isFinite(d[i]), `${name}: не число на ${i}`)
@@ -57,7 +74,8 @@ test('петли бесшовны: стык не больше обычного �
 })
 
 test('петли приведены к общему уровню и без постоянной составляющей', () => {
-  for (const name of ['leavesL', 'leavesR', 'concreteL', 'concreteR', 'curtain', 'stream', 'engine'] as BankName[]) {
+  // Часы приведены к пику, а не к RMS: у тиканья уровень - удар.
+  for (const name of ['leavesL', 'leavesR', 'concreteL', 'concreteR', 'curtain', 'stream', 'engine', 'roofL', 'roofR', 'hum', 'phyto', 'starter', 'pump'] as BankName[]) {
     const d = bank.data(name)![0]
     let s = 0
     let q = 0
@@ -84,6 +102,17 @@ test('у дождя редкие крупные зёрна придавлены:
 test('левая и правая петли дождя разной длины: повтор не слышен', () => {
   assert.notEqual(bank.data('leavesL')![0].length, bank.data('leavesR')![0].length)
   assert.notEqual(bank.data('concreteL')![0].length, bank.data('concreteR')![0].length)
+  assert.notEqual(bank.data('roofL')![0].length, bank.data('roofR')![0].length)
+})
+
+test('наборы нутра: у каждого шага по маршу и капли в ведро пик - единица', () => {
+  for (const name of ['steel', 'bucket'] as BankName[]) {
+    for (const d of bank.data(name)!) {
+      let peak = 0
+      for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]))
+      assert.ok(Math.abs(peak - 1) < 1e-6, `${name}: пик ${peak}`)
+    }
+  }
 })
 
 test('отклики: два канала, длина по таблице пространств, каналы разные', () => {

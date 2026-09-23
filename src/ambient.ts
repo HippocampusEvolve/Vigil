@@ -14,16 +14,33 @@
  * Уровень появления запоминается здесь, а не пишется в узел сразу: контекст
  * может завестись позже конца появления, и тогда мир остался бы немым
  * насовсем. Мастер получает запомненное значение при рождении и потом в
- * каждом `update`.
+ * каждом `update`. Так же запоминаются двери, свет и позывной: мир может
+ * сказать про них раньше, чем игрок разбудит звук.
+ *
+ * Что звать из кадра и по событиям:
+ *   update(dt, ear)        каждый кадр - ухо и часы;
+ *   setDoor(id, open)      каждый кадр - доля открытия каждой двери, 0..1;
+ *                          дёшево, если ничего не изменилось;
+ *   doorEvent(id, kind)    по событию двери: 'unlock' - лязг замка, 'open' и
+ *                          'close' - скрип створки (`speed` - её скорость,
+ *                          рад/с), 'shut' - удар о коробку;
+ *   setLights(powers)      каждый кадр - сила каждого светильника 0..1: гул
+ *                          трубки идёт за ней, провал ниже половины и возврат -
+ *                          щелчок и «тинк» стартёра;
+ *   setCallsign(pattern)   позывной в эфире приёмника точками и тире, или null;
+ *   step(surface, x, z)    каждый шаг игрока.
  *
  * Модуль не трогает DOM при импорте: тот же код прогоняет проверка звука на
  * Node, где нет ни документа, ни звуковой карты.
  */
 
 import { createBank, type Bank } from './sound/bank'
+import { shutDoors } from './sound/hear'
+import type { DoorEvent } from './sound/inside'
 import type { Ear } from './sound/place'
 import { createScape, type Scape } from './sound/scape'
 import type { Surface } from './support'
+import type { DoorId, FixtureId } from './world/zones'
 
 export type Ambient = ReturnType<typeof createAmbient>
 
@@ -49,6 +66,9 @@ export function createAmbient() {
   let writtenAt = -Infinity
   let rain = 1
   let assemble = false
+  const doors = shutDoors()
+  const lights: Partial<Record<FixtureId, number>> = {}
+  let callsign: string | null = null
 
   function build(): void {
     const c = new AudioContext()
@@ -62,6 +82,9 @@ export function createAmbient() {
     bank ??= createBank(c.sampleRate)
     scape = createScape(c, bank)
     scape.setRain(rain)
+    for (const [id, v] of Object.entries(doors) as Array<[DoorId, number]>) scape.setDoor(id, v)
+    scape.setLights(lights)
+    scape.setCallsign(callsign)
     scape.mix.master.gain.value = wake
     written = wake
   }
@@ -114,9 +137,30 @@ export function createAmbient() {
     setWake(v: number): void {
       wake = Math.max(0, Math.min(1, v))
     },
-    /** Шаг игрока по поверхности в точке (x, z). */
+    /** Шаг игрока по поверхности в точке (x, z): грязь, бетон, вода, сталь марша. */
     step(surface: Surface, x: number, z: number, running: boolean): void {
       scape?.synth.step(surface, x, z, running)
+    },
+    /** Доля открытия двери 0..1. Зовётся каждый кадр; дёшево, если не изменилось. */
+    setDoor(id: DoorId, open: number): void {
+      const v = Math.max(0, Math.min(1, open))
+      if (v === doors[id]) return
+      doors[id] = v
+      scape?.setDoor(id, v)
+    },
+    /** Разовый звук двери: лязг замка, скрип створки со скоростью `speed` рад/с, удар о коробку. */
+    doorEvent(id: DoorId, kind: DoorEvent, speed?: number): void {
+      scape?.door(id, kind, speed)
+    },
+    /** Сила светильников 0..1, каждый кадр: гул трубок идёт за ней. */
+    setLights(powers: Partial<Record<FixtureId, number>>): void {
+      Object.assign(lights, powers)
+      scape?.setLights(powers)
+    },
+    /** Позывной в эфире приёмника (точки, тире, пробел между буквами) или null - эфир пуст. */
+    setCallsign(pattern: string | null): void {
+      callsign = pattern
+      scape?.setCallsign(pattern)
     },
     /**
      * Зовётся в момент вспышки: далёкий раскат приходит через `delay` с;

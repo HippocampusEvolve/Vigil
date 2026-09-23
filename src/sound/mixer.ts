@@ -69,6 +69,13 @@ function ceilingCurve(): Float32Array<ArrayBuffer> {
 
 export type Mixer = ReturnType<typeof createMixer>
 
+/**
+ * Шины, в которые звучат источники: сухо, мимо свёртки и посылом в
+ * пространство. У микшера они свои; у улицы внутри поста - те же шины, но
+ * через затенение входной двери (`shade.ts`).
+ */
+export type Bus = { ctx: BaseAudioContext; dry: AudioNode; weather: AudioNode; send: AudioNode; sfx: AudioNode }
+
 export function createMixer(ctx: BaseAudioContext, opts: { limit?: boolean } = {}) {
   const gain = (v = 1): GainNode => {
     const n = ctx.createGain()

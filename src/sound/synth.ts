@@ -12,6 +12,13 @@
  *                  лишним раза, атака не больше 3 мс.
  *   ШАГ ПО ВОДЕ    шаг по бетону плюс всплеск: вода брызжет, энергии выше
  *                  4 кГц вдвое больше, чем у шага по грязи.
+ *   ШАГ ПО МАРШУ   посчитанный заранее набор (`strike.ts`): щелчок, три моды
+ *                  800-3000 Гц со спадом 60-150 мс и дребезг проступи через
+ *                  10-20 мс.
+ *   МОКРЫЕ ПОДОШВЫ после грязи или воды первые 30 шагов по твёрдому - с лёгким
+ *                  «чваком»: полоса, скользящая 300-1200 Гц за 40-70 мс, всё
+ *                  тише от шага к шагу. Энергии в полосе чвака у первого шага
+ *                  вдвое больше, чем у сухого.
  *   ВСПЛЕСК        щелчок шума 5-10 мс, за ним 3-8 капель с задержками до
  *                  40 мс, низкий удар 80-150 Гц.
  *   ДАЛЁКИЙ ГРОМ   коричневый шум под срезом, который ползёт от 200 к 60 Гц;
@@ -26,14 +33,18 @@
  *   СКРИП СТВОЛА   пила низкой частоты - каждый её скачок это «срыв» волокна -
  *                  через три узких резонанса 350-900 Гц.
  *   ПЛОД           шорох сквозь листья, потом глухой удар о землю.
- *   КАПЛЯ          одна из заранее посчитанных капель (`water.ts`).
+ *   КАПЛЯ          одна из заранее посчитанных капель (`water.ts`); капля в
+ *                  ведро - из своего набора, ниже и глуше, с «бульком».
+ *
+ * Гром и опушка звучат в шины улицы (`shade.ts`): изнутри поста их слышно
+ * через дверь или стену. Шаги - у самого уха, им затенение ни к чему.
  */
 
 import type { Surface } from '../support'
 import type { Bank } from './bank'
 import { db } from './dsp'
 import { LEVEL, SEND } from './levels'
-import type { Mixer } from './mixer'
+import type { Bus } from './mixer'
 import { distance, falloff, panOf, qOf, Spot, type Ear, type Point } from './place'
 
 const rand = (a: number, b: number): number => a + (b - a) * Math.random()
@@ -65,16 +76,49 @@ function crackCurve(): Float32Array<ArrayBuffer> {
   return crackShape
 }
 
+/** Сколько шагов по твёрдому подошвы остаются мокрыми после улицы. */
+export const SOLES = 30
+
+/**
+ * Мокрые подошвы: грязь и вода мочат их заново, каждый шаг по твёрдому сушит
+ * на один шаг. `step` отвечает, сколько «чвака» у этого шага: от 1 у первого
+ * до 1/30 у тридцатого, дальше ноль.
+ */
+export class Soles {
+  private left = 0
+
+  step(surface: Surface): number {
+    if (surface === 'mud' || surface === 'water') {
+      this.left = SOLES
+      return 0
+    }
+    if (this.left <= 0) return 0
+    const k = this.left / SOLES
+    this.left--
+    return k
+  }
+
+  /** Намочить, не шагая: игрок вошёл с улицы, а шагов по грязи не было (проверка, перенос). */
+  soak(): void {
+    this.left = SOLES
+  }
+}
+
 export type Synth = ReturnType<typeof createSynth>
 
-export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { wet?: number } = {}) {
+export function createSynth(mix: Bus, bank: Bank, earOf: () => Ear, opts: { wet?: number; outside?: Bus } = {}) {
   const ctx = mix.ctx
+  const street = opts.outside ?? mix
+  const soles = new Soles()
 
-  /** Место разового звука: громкость по расстоянию, посыл тем больше, чем дальше. */
-  function spot(p: Point, level: number, ref: number, wet?: number): Spot {
+  /**
+   * Место разового звука: громкость по расстоянию, посыл тем больше, чем
+   * дальше. `bus` - в чьи шины: свои или улицы.
+   */
+  function spot(p: Point, level: number, ref: number, wet?: number, bus: Bus = mix): Spot {
     const ear = earOf()
     const d = distance(ear, p)
-    const s = new Spot(mix, { wet: opts.wet ?? wet ?? SEND.near + (SEND.far - SEND.near) * Math.min(1, d / 30) })
+    const s = new Spot(bus, { wet: opts.wet ?? wet ?? SEND.near + (SEND.far - SEND.near) * Math.min(1, d / 30) })
     s.set(level * falloff(d, ref), panOf(ear, p, 1.5), 'now')
     return s
   }
@@ -140,8 +184,8 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
   }
 
   /** Одна из посчитанных капель, со скоростью `rate` (выше - мельче). */
-  function drop(out: AudioNode, t: number, gain: number, rate = 1): void {
-    const set = bank.audio(ctx, 'drops')
+  function drop(out: AudioNode, t: number, gain: number, rate = 1, kind: 'drops' | 'bucket' = 'drops'): void {
+    const set = bank.audio(ctx, kind)
     if (!set) return
     const s = ctx.createBufferSource()
     s.buffer = set[Math.floor(Math.random() * set.length)]
@@ -173,6 +217,28 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
     burst(out, t, { type: 'lowpass', freq: 260, q: 0.7, attack: 0.002, peak: NORM.concrete * 0.6, end: t + 0.04 })
   }
 
+  /** Шаг по маршу: один из посчитанных, пик у каждого - единица. */
+  function steel(out: AudioNode, t: number, running: boolean): void {
+    const set = bank.audio(ctx, 'steel')
+    if (!set) {
+      concrete(out, t)
+      return
+    }
+    const s = ctx.createBufferSource()
+    s.buffer = set[Math.floor(Math.random() * set.length)]
+    s.playbackRate.value = running ? rand(1, 1.08) : rand(0.95, 1.03)
+    s.connect(out)
+    s.start(t)
+  }
+
+  /** «Чвак» мокрой подошвы: полоса скользит 300-1200 Гц, в конце подошва отлипает. */
+  function squelch(out: AudioNode, t: number, k: number): void {
+    const len = rand(0.04, 0.07)
+    burst(out, t + 0.004, { type: 'bandpass', freq: 300, to: 1200, q: 3, attack: 0.004, peak: NORM.concrete * 0.45 * k, end: t + 0.004 + len })
+    const off = t + 0.004 + len * 0.8
+    burst(out, off, { type: 'bandpass', freq: rand(2200, 3000), q: 2, attack: 0.0005, peak: NORM.concrete * 0.12 * k, end: off + 0.012 })
+  }
+
   function splash(out: AudioNode, t: number, gain = 1): void {
     const k = NORM.splash * gain
     burst(out, t, { type: 'bandpass', freq: rand(2500, 6000), q: 0.8, attack: 0.0005, peak: k, end: t + rand(0.005, 0.01) })
@@ -192,9 +258,12 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
     const p = { x, y: ear.y - 1.5, z }
     const heavy = running ? db(2.5) : 1
     const s = spot(p, db(LEVEL.step) * heavy * rand(0.85, 1.05), 1.8, SEND.near)
+    const wet = soles.step(surface)
     if (surface === 'mud') mud(s.input, t, running)
+    else if (surface === 'steel') steel(s.input, t, running)
     else concrete(s.input, t)
     if (surface === 'water') splash(s.input, t + 0.004, running ? 1.2 : 1)
+    if (wet > 0) squelch(s.input, t, wet)
   }
 
   // --- Гром ----------------------------------------------------------------------
@@ -231,7 +300,7 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
     const ear = earOf()
     // Место условное, только ради панорамы: гром звучит одинаково громко везде.
     const p = { x: ear.x + Math.cos(a) * 100, y: ear.y + 50, z: ear.z + Math.sin(a) * 100 }
-    const s = spot(p, 1, 1e9, SEND.far)
+    const s = spot(p, 1, 1e9, SEND.far, street)
     const dur = rand(3.5, 8)
     roll(s.input, t0, dur, peak, rand(170, 230))
     const copies = 1 + Math.floor(Math.random() * 2)
@@ -254,7 +323,7 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
     const t = now + rand(0.2, 0.5)
     const ear = earOf()
     // Удар сверху и чуть в стороне: под самым небом панорама не бывает крайней.
-    const s = spot({ x: ear.x + rand(-25, 25), y: ear.y + 60, z: ear.z + rand(-25, 25) }, 1, 1e9, SEND.near)
+    const s = spot({ x: ear.x + rand(-25, 25), y: ear.y + 60, z: ear.z + rand(-25, 25) }, 1, 1e9, SEND.near, street)
     // Треск - шум, загнанный в насыщение: разряд плотный, почти без провалов, и
     // потому громче всего, что за ним, не только по пику, но и по среднему.
     // Насыщение же держит пик ровно на уровне из таблицы в громком канале.
@@ -294,7 +363,7 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
   // --- Опушка ------------------------------------------------------------------
 
   function bird(p: Point): void {
-    const s = spot(p, db(LEVEL.bird.db), LEVEL.bird.ref, SEND.far)
+    const s = spot(p, db(LEVEL.bird.db), LEVEL.bird.ref, SEND.far, street)
     let t = ctx.currentTime + 0.02
     const calls = 1 + Math.floor(Math.random() * 3)
     for (let i = 0; i < calls; i++) {
@@ -312,7 +381,7 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
   }
 
   function creak(p: Point): void {
-    const s = spot(p, db(LEVEL.creak.db), LEVEL.creak.ref)
+    const s = spot(p, db(LEVEL.creak.db), LEVEL.creak.ref, undefined, street)
     const t = ctx.currentTime + 0.02
     const dur = rand(0.8, 1.6)
     const osc = ctx.createOscillator()
@@ -335,7 +404,7 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
   }
 
   function fruit(p: Point): void {
-    const s = spot(p, db(LEVEL.fruit.db), LEVEL.fruit.ref)
+    const s = spot(p, db(LEVEL.fruit.db), LEVEL.fruit.ref, undefined, street)
     let t = ctx.currentTime + 0.02
     const leaves = 3 + Math.floor(Math.random() * 3)
     for (let i = 0; i < leaves; i++) {
@@ -347,11 +416,25 @@ export function createSynth(mix: Mixer, bank: Bank, earOf: () => Ear, opts: { we
     burst(s.input, t, { type: 'lowpass', freq: 400, q: 0.7, attack: 0.001, peak: NORM.fruit, end: t + 0.03 })
   }
 
-  /** Одна капля в точке. */
-  function drip(p: Point): void {
-    const s = spot(p, db(LEVEL.drip.db), LEVEL.drip.ref)
-    drop(s.input, ctx.currentTime + 0.005, 1, rand(0.92, 1.08))
+  /** Одна капля в точке: в лужу или в полное ведро. */
+  function drip(p: Point, kind: 'water' | 'bucket' = 'water'): void {
+    const lv = kind === 'bucket' ? LEVEL.bucket : LEVEL.drip
+    const s = spot(p, db(lv.db), lv.ref)
+    drop(s.input, ctx.currentTime + 0.005, 1, rand(0.92, 1.08), kind === 'bucket' ? 'bucket' : 'drops')
   }
 
-  return { step, splash: (p: Point, gain = 1) => splash(spot(p, db(LEVEL.step), 1.8).input, ctx.currentTime + 0.005, gain), thunder, bird, creak, fruit, drip }
+  return {
+    step,
+    splash: (p: Point, gain = 1) => splash(spot(p, db(LEVEL.step), 1.8).input, ctx.currentTime + 0.005, gain),
+    thunder,
+    bird,
+    creak,
+    fruit,
+    drip,
+    /** Капля в чужой узел (источник со своим затенением): пик у набора - единица. */
+    dropInto: (out: AudioNode, gain: number, rate = 1, kind: 'drops' | 'bucket' = 'drops') =>
+      drop(out, ctx.currentTime + 0.005, gain, rate, kind),
+    /** Намочить подошвы (см. `Soles`). */
+    soak: () => soles.soak(),
+  }
 }

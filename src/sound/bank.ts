@@ -1,13 +1,14 @@
 /**
  * sound/bank.ts - всё, что звук считает заранее, и порции, которыми он это делает.
  *
- * Постоянные текстуры (дождь, ручей, генератор, завеса капель), шумы для
- * разовых звуков и импульсные отклики пространств - это несколько секунд
- * звука каждая, посчитанные арифметикой. Считать их разом нельзя: это десятки
- * миллисекунд, и кадр, в который они попадут, заметно дёрнется. Поэтому работа
- * режется на порции: `work(бюджет)` считает, пока не выйдет бюджет, и отдаёт
- * управление. Зовётся из кадра, так что к моменту, когда игрок встаёт на ноги,
- * всё уже готово.
+ * Постоянные текстуры (дождь, ручей, генератор, завеса капель, дробь по
+ * кровле, гул трубок, насосы), шумы и наборы для разовых звуков и импульсные
+ * отклики пространств - это несколько секунд звука каждая, посчитанные
+ * арифметикой. Считать их разом нельзя: это десятки миллисекунд, и кадр, в
+ * который они попадут, заметно дёрнется. Поэтому работа режется на порции:
+ * `work(бюджет)` считает, пока не выйдет бюджет, и отдаёт управление. Зовётся
+ * из кадра, так что к моменту, когда игрок встаёт на ноги, поляна уже
+ * посчитана, а к двери поста - и нутро.
  *
  * Аудиоконтекст для этого не нужен: петля - просто массив чисел на заданной
  * частоте дискретизации. Поэтому счёт идёт ещё до жеста игрока, а контекст
@@ -19,9 +20,12 @@
 
 import { biquad, filterLoop, polish, rng, SLICE, type Samples } from './dsp'
 import { bakeEngine } from './engine'
+import { bakeClock, bakeHum, bakePump, bakeStarter, HUM, PHYTO } from './machines'
 import { bakeConcrete, bakeLeaves } from './rain'
 import { bakeImpulse } from './reverb'
-import { bakeCurtain, bakeDrops, bakeStream } from './water'
+import { bakeRoof } from './roof'
+import { bakeSteel } from './strike'
+import { bakeBucket, bakeCurtain, bakeDrops, bakeStream } from './water'
 
 /** Частота медленного шума: он качает параметры, а не звучит, и густая сетка ему не нужна. */
 const WANDER_RATE = 8000
@@ -44,6 +48,16 @@ const JOBS = [
   { name: 'stream', set: false, run: (rate: number) => bakeStream(rate) },
   { name: 'irPost', set: false, run: (rate: number) => bakeImpulse('post', rate) },
   { name: 'irLower', set: false, run: (rate: number) => bakeImpulse('lower', rate) },
+  // Нутро: игрок доходит до него не раньше чем через минуту.
+  { name: 'steel', set: true, run: (rate: number) => bakeSteel(rate) },
+  { name: 'roofL', set: false, run: (rate: number) => bakeRoof(rate, 0) },
+  { name: 'roofR', set: false, run: (rate: number) => bakeRoof(rate, 1) },
+  { name: 'hum', set: false, run: (rate: number) => bakeHum(rate, HUM) },
+  { name: 'phyto', set: false, run: (rate: number) => bakeHum(rate, PHYTO, 23) },
+  { name: 'starter', set: false, run: (rate: number) => bakeStarter(rate) },
+  { name: 'clock', set: false, run: (rate: number) => bakeClock(rate) },
+  { name: 'bucket', set: true, run: (rate: number) => bakeBucket(rate) },
+  { name: 'pump', set: false, run: (rate: number) => bakePump(rate) },
 ] as const satisfies ReadonlyArray<{ name: string; set: boolean; run: (rate: number) => Generator<void, Baked> }>
 
 export type BankName = (typeof JOBS)[number]['name']

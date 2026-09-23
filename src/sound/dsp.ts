@@ -217,8 +217,9 @@ export function sines(): Float32Array {
 }
 
 /**
- * Шумовое зерно, вписанное в петлю по кругу: белый шум через полосовой
- * фильтр под огибающей «атака линейно, спад экспонентой».
+ * Шумовое зерно, вписанное в петлю по кругу: белый шум через фильтр
+ * (полосовой, срез снизу или сверху) под огибающей «атака линейно, спад
+ * экспонентой».
  *
  * `decay` - время, за которое зерно стихает на 40 дБ; тогда на -20 дБ оно
  * опускается вдвое быстрее, и это и есть его слышимая длина. Писать по кругу
@@ -230,7 +231,7 @@ export function addGrain(
   at: number,
   rate: number,
   r: () => number,
-  o: { freq: number; q: number; attack: number; decay: number; amp: number; type?: 'bandpass' | 'highpass' }
+  o: { freq: number; q: number; attack: number; decay: number; amp: number; type?: 'bandpass' | 'highpass' | 'lowpass' }
 ): void {
   const n = out.length
   const { b0, b1, b2, a1, a2 } = biquad(o.type ?? 'bandpass', o.freq, o.q, rate)
