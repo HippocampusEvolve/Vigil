@@ -17,9 +17,21 @@ import * as THREE from 'three'
 import { Capsule } from 'three/examples/jsm/math/Capsule.js'
 import { Octree } from 'three/examples/jsm/math/Octree.js'
 import type { Support } from 'world-core/core'
+import { FLOOR, LOWER, STAIRS } from './world/layout'
 
-/** На чём стоим. Нужно звуку: грязь чавкает, бетон щёлкает, лужа брызжет. */
-export type Surface = 'mud' | 'concrete' | 'water'
+/**
+ * На чём стоим. Нужно звуку: грязь чавкает, бетон щёлкает, лужа брызжет,
+ * стальной марш звенит. Пол нижнего яруса под водой по щиколотку - это вода.
+ */
+export type Surface = 'mud' | 'concrete' | 'water' | 'steel'
+
+/** Что за настил под точкой: марш лестницы - сталь, пол низа - вода, прочее - бетон. */
+export function deckSurface(x: number, y: number, z: number): Surface {
+  const runEnd = STAIRS.top - (STAIRS.rises - 1) * STAIRS.tread
+  if (x > STAIRS.x0 - 0.05 && x < STAIRS.x1 + 0.05 && z < STAIRS.top + 0.05 && z > runEnd - 0.05 && y < FLOOR.y - 0.05 && y > LOWER.floor + 0.05) return 'steel'
+  if (y < LOWER.floor + LOWER.water) return 'water'
+  return 'concrete'
+}
 
 /**
  * Круче ~57° — уже не пол, а скала: по ней съезжают, а не поднимаются.
@@ -145,7 +157,7 @@ export function createSupport(opts: {
         if (h === null) continue
         if (y === null || h > y) {
           y = h
-          surface = 'concrete'
+          surface = deckSurface(x + dx, h, z + dz)
         }
       }
 
