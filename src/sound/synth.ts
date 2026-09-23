@@ -231,10 +231,14 @@ export function createSynth(mix: Bus, bank: Bank, earOf: () => Ear, opts: { wet?
     s.start(t)
   }
 
-  /** «Чвак» мокрой подошвы: полоса скользит 300-1200 Гц, в конце подошва отлипает. */
+  /**
+   * «Чвак» мокрой подошвы: полоса скользит 300-1200 Гц, в конце подошва
+   * отлипает. Пик чвака тише щелчка бетона, но в своей полосе он главный:
+   * щелчок сам богат серединой, и чвак слабее этого тонет в нём.
+   */
   function squelch(out: AudioNode, t: number, k: number): void {
     const len = rand(0.04, 0.07)
-    burst(out, t + 0.004, { type: 'bandpass', freq: 300, to: 1200, q: 3, attack: 0.004, peak: NORM.concrete * 0.45 * k, end: t + 0.004 + len })
+    burst(out, t + 0.004, { type: 'bandpass', freq: 300, to: 1200, q: 3, attack: 0.004, peak: NORM.concrete * 0.7 * k, end: t + 0.004 + len })
     const off = t + 0.004 + len * 0.8
     burst(out, off, { type: 'bandpass', freq: rand(2200, 3000), q: 2, attack: 0.0005, peak: NORM.concrete * 0.12 * k, end: off + 0.012 })
   }

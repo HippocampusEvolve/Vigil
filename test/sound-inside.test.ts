@@ -12,7 +12,7 @@ import { crossedEntry, DOOR_IDS, earZone, hear, outward, shutDoors, sighStart, S
 import { INDOOR, morse, TUBES } from '../src/sound/indoor'
 import { LEVEL, SHADE } from '../src/sound/levels'
 import { SPACE_TAU } from '../src/sound/mixer'
-import { CREAK, DOOR_VOICE, renderCreak, renderGroan, renderLock, renderSlam, renderStarter, toPeak } from '../src/sound/strike'
+import { CREAK, DOOR_VOICE, GROAN, renderCreak, renderGroan, renderLock, renderSlam, renderStarter, toPeak } from '../src/sound/strike'
 import { Soles, SOLES } from '../src/sound/synth'
 import { GENERATOR_ROOM } from '../src/world/layout'
 import { FIXTURES, PORTALS, portalCenter, ROOMS, SOURCES, zoneAt } from '../src/world/zones'
@@ -225,6 +225,13 @@ test('разовые звуки в массив: пик ровно единиц�
   const flat = new Float32Array([0, 0.5, -2, 0.25])
   toPeak(flat)
   assert.ok(near(Math.max(...flat.map(Math.abs)), 1, 1e-6))
+})
+
+test('стон корпуса: моды в 40-200 Гц при любом разбросе, плавании и скорости проигрывания', () => {
+  const low = GROAN.base[0] * (1 - GROAN.spread) * (1 - GROAN.drift) * GROAN.play[0]
+  const high = GROAN.top * (1 + GROAN.drift) * GROAN.play[1]
+  assert.ok(low >= 40, `нижняя мода ${low.toFixed(1)} Гц`)
+  assert.ok(high <= 200, `верхняя мода ${high.toFixed(1)} Гц`)
 })
 
 test('скрип: медленная створка скрипит дольше быстрой, но в своих пределах', () => {

@@ -6,7 +6,8 @@
  * (`hear.ts`): дверь - в своём проёме, и из той комнаты, куда она открыта,
  * она звучит в полную полосу, а из-за стены - глухо. Сам звук считается в
  * массив (`strike.ts`) и приводится к пику 1, поэтому его уровень из `LEVEL` -
- * ровно пик на опорном расстоянии. Узлы создаются на событие и отпускаются.
+ * ровно пик на опорном расстоянии; стоны корпуса, самые долгие, посчитаны
+ * заранее набором. Узлы создаются на событие и отпускаются.
  *
  * Дверь:
  *   'unlock'  лязг замка;
@@ -20,13 +21,14 @@
 
 import { LOWER } from '../world/layout'
 import { PORTALS, portalCenter, ROOMS, zoneAt, type DoorId, type RoomId } from '../world/zones'
+import type { Bank } from './bank'
 import { db } from './dsp'
 import { hear, SIGH, type Hearing, type Source } from './hear'
 import { LEVEL, SEND } from './levels'
 import type { Mixer } from './mixer'
 import type { Point } from './place'
 import { Shaded } from './shade'
-import { DOOR_VOICE, renderCreak, renderGroan, renderLock, renderSlam, renderStarter } from './strike'
+import { DOOR_VOICE, GROAN, renderCreak, renderLock, renderSlam, renderStarter } from './strike'
 import type { Synth } from './synth'
 
 const rand = (a: number, b: number): number => a + (b - a) * Math.random()
@@ -43,7 +45,7 @@ const DOORS = new Map<DoorId, Source>(
 
 export type Inside = ReturnType<typeof createInside>
 
-export function createInside(mix: Mixer, h: Hearing, synth: Synth, opts: { wet?: number } = {}) {
+export function createInside(mix: Mixer, h: Hearing, synth: Synth, bank: Bank, opts: { wet?: number } = {}) {
   const ctx = mix.ctx
 
   /** Источник в точке, поставленный по графу сейчас. */
@@ -53,9 +55,9 @@ export function createInside(mix: Mixer, h: Hearing, synth: Synth, opts: { wet?:
     return s
   }
 
-  /** Сыграть посчитанный массив в узел. */
-  function play(data: Float32Array, out: AudioNode, t: number, gain: number): void {
-    const b = ctx.createBuffer(1, data.length, ctx.sampleRate)
+  /** Сыграть посчитанный массив в узел; `rate` - частота, на которой он посчитан. */
+  function play(data: Float32Array, out: AudioNode, t: number, gain: number, rate = ctx.sampleRate): void {
+    const b = ctx.createBuffer(1, data.length, rate)
     b.copyToChannel(data as Float32Array<ArrayBuffer>, 0)
     const s = ctx.createBufferSource()
     s.buffer = b
@@ -74,7 +76,9 @@ export function createInside(mix: Mixer, h: Hearing, synth: Synth, opts: { wet?:
     const rate = ctx.sampleRate
     if (kind === 'unlock') play(renderLock(rate, voice), s.input, t, db(LEVEL.door.db))
     else if (kind === 'shut') play(renderSlam(rate, voice), s.input, t, db(LEVEL.door.db))
-    else play(renderCreak(rate, speed, kind === 'close', voice), s.input, t, db(LEVEL.hinge.db))
+    // Скрип считается на половинной частоте: его резонансы ниже 3 кГц, щелчкам
+    // срыва хватает верха до 11-12 кГц, а счёт в миг события вдвое короче.
+    else play(renderCreak(rate / 2, speed, kind === 'close', voice), s.input, t, db(LEVEL.hinge.db), rate / 2)
   }
 
   /** Случайная точка у стены нижнего яруса, на высоте груди: корпус стонет стенами. */
@@ -95,12 +99,23 @@ export function createInside(mix: Mixer, h: Hearing, synth: Synth, opts: { wet?:
   return {
     door,
 
-    /** Стон корпуса: в точке `p` или у случайной стены низа; через отклик пространства - большой посыл. */
+    /**
+     * Стон корпуса: в точке `p` или у случайной стены низа; через отклик
+     * пространства - большой посыл. Один из посчитанных заранее (`bank.ts`),
+     * со своей скоростью: у каждого раза своя высота.
+     */
     groan(p: Point = hullPoint()): void {
+      const set = bank.audio(ctx, 'groans')
       const room = roomOf(p)
-      if (!room) return
+      if (!set || !room) return
       const s = shadedAt({ rooms: [room], at: p, ref: LEVEL.groan.ref }, SEND.far)
-      play(renderGroan(ctx.sampleRate), s.input, ctx.currentTime + 0.01, db(LEVEL.groan.db))
+      const src = ctx.createBufferSource()
+      src.buffer = set[Math.floor(Math.random() * set.length)]
+      src.playbackRate.value = rand(GROAN.play[0], GROAN.play[1])
+      const g = ctx.createGain()
+      g.gain.value = db(LEVEL.groan.db)
+      src.connect(g).connect(s.input)
+      src.start(ctx.currentTime + 0.01)
     },
 
     /** Капля в точке `p` (в воду низа, в раковину): из набора `kind`, с уровнем `level` на его опоре. */

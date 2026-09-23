@@ -75,7 +75,7 @@ export function createScape(
   const doors = shutDoors()
   const hearing: Hearing = { ear: defaultEar(WAKE_POINT, BODY.eye), zone: 'out', doors, changed: false }
   const synth = createSynth(mix, bank, () => hearing.ear, { wet: opts.wet, outside: outside.bus })
-  const inside = createInside(mix, hearing, synth, { wet: opts.wet })
+  const inside = createInside(mix, hearing, synth, bank, { wet: opts.wet })
   const rig = { mix, bank, weather, synth, inside }
   const rare = (opts.rare ?? true) ? createRare(synth) : null
   const layers = new Map<LayerName, Layer>()

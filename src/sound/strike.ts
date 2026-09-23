@@ -9,8 +9,8 @@
  * это и есть пик на выходе.
  *
  * Счёт короткий (скрип в две секунды - единицы миллисекунд), поэтому идёт
- * прямо в момент события; шаги по маршу и капли в ведро считаются заранее
- * наборами (`bank.ts`), как капли поляны.
+ * прямо в момент события; шаги по маршу, капли в ведро и стоны корпуса
+ * считаются заранее наборами (`bank.ts`), как капли поляны.
  *
  * Что как звучит:
  *   СКРИП ДВЕРИ   цепочка «срывов» петли: каждый срыв - щелчок, звенящий в трёх
@@ -26,7 +26,8 @@
  *                 с падающей высотой), звон полотна и через 25-40 мс щелчок
  *                 защёлки.
  *   ШАГ ПО МАРШУ  щелчок и три моды 800-3000 Гц со спадом 60-150 мс; через
- *                 10-20 мс дребезг незакреплённой проступи.
+ *                 10-20 мс дребезг незакреплённой проступи - второй, слабый
+ *                 удар по тем же модам. Модальных пиков 2-4, не больше.
  *   СТОН КОРПУСА  3-5 мод 40-200 Гц с долгим спадом 2-5 с, высота чуть плывёт;
  *                 вступает мягко, как нагрузка, а не удар.
  *   СТАРТЁР       щелчок на провале света (шум 2-4 кГц, 2 мс) и «тинк»
@@ -234,6 +235,13 @@ export function renderSlam(rate: number, voice: DoorVoice, seed = Math.random() 
 
 // --- Шаг по маршу ------------------------------------------------------------------------
 
+/** Моды проступи марша: [Гц, сила, спад до -60 дБ, с]. */
+const STEEL_MODES: ReadonlyArray<readonly [number, number, number]> = [
+  [870, 0.5, 0.14],
+  [1410, 0.35, 0.11],
+  [2260, 0.22, 0.08],
+]
+
 /**
  * Шаг по стальному маршу: щелчок, три моды проступи и дребезг. Набор из
  * `count` шагов, каждый чуть другой - играется случайный.
@@ -245,19 +253,15 @@ export function* bakeSteel(rate: number, count = 8, seed = 83): Generator<void, 
     const d = new Float32Array(Math.round(0.3 * rate))
     const t0 = Math.round(0.002 * rate)
     addGrain(d, t0, rate, r, { freq: 3000, q: 0.7, attack: 0.0003, decay: 0.003, amp: 0.8 })
-    for (const [f, amp, t60] of [
-      [870, 0.5, 0.14],
-      [1410, 0.35, 0.11],
-      [2260, 0.22, 0.08],
-    ] as const) {
-      ringInto(d, t0, rate, { freq: f * between(r, 0.92, 1.08), t60: t60 * between(r, 0.85, 1.1), amp, phase: r() })
-    }
+    const modes = STEEL_MODES.map(([f, amp, t60]) => ({ freq: f * between(r, 0.92, 1.08), t60: t60 * between(r, 0.85, 1.1), amp }))
+    for (const m of modes) ringInto(d, t0, rate, { ...m, phase: r() })
     // Нога: глухо и коротко, сталь под ней не звенит басом.
     ringInto(d, t0, rate, { freq: between(r, 100, 130), t60: 0.05, amp: 0.3 })
-    // Дребезг: незакреплённая проступь отвечает вторым, слабым щелчком.
+    // Дребезг: незакреплённая проступь бьёт второй раз - слабый щелчок, и те
+    // же её моды звенят снова, короче. Своих нот у дребезга нет: это та же сталь.
     const rattle = t0 + Math.round(between(r, 0.01, 0.02) * rate)
     addGrain(d, rattle, rate, r, { freq: 4000, q: 1, attack: 0.0002, decay: 0.002, amp: 0.45 })
-    for (const f of [1730, 2890]) ringInto(d, rattle, rate, { freq: f * between(r, 0.95, 1.05), t60: 0.05, amp: 0.2, phase: r() })
+    for (const m of modes) ringInto(d, rattle, rate, { freq: m.freq, t60: m.t60 * 0.5, amp: m.amp * 0.35, phase: r() })
     toPeak(d)
     out.push(d)
     yield
@@ -267,17 +271,27 @@ export function* bakeSteel(rate: number, count = 8, seed = 83): Generator<void, 
 
 // --- Корпус --------------------------------------------------------------------------------
 
-/** Стон корпуса: длина, отношения мод к основной, спад. */
+/**
+ * Стон корпуса: длина, отношения мод к основной, спад. Моды лежат в 40-200 Гц
+ * с запасом на всё, что двигает высоту: разброс каждой моды (`spread`),
+ * плавание к концу (`drift`) и скорость, с которой играется посчитанный стон
+ * (`play`). Всё в нём ниже 200 Гц, поэтому считается он на `rate` 8 кГц:
+ * дешевле вшестеро, а слышно то же.
+ */
 export const GROAN = {
   seconds: 5.5,
-  base: [40, 70],
+  base: [43, 66],
   ratios: [1, 1.37, 1.93, 2.61, 3.28],
+  spread: 0.02,
+  drift: 0.02,
   t60: [2, 5],
-  top: 200,
+  top: 190,
+  play: [0.97, 1.03],
+  rate: 8000,
 } as const
 
-export function renderGroan(rate: number, seed = Math.random() * 1e9): Samples {
-  const r = rng(seed >>> 0)
+/** Один стон, по моде за шаг: порция работы не растёт с числом мод. */
+function* groanSteps(rate: number, r: () => number): Generator<void, Samples> {
   const n = Math.round(GROAN.seconds * rate)
   const out = new Float32Array(n)
   const f0 = between(r, GROAN.base[0], GROAN.base[1])
@@ -286,23 +300,46 @@ export function renderGroan(rate: number, seed = Math.random() * 1e9): Samples {
   let made = 0
   for (const ratio of GROAN.ratios) {
     if (made >= count) break
-    const f = f0 * ratio * between(r, 0.97, 1.03)
+    const f = f0 * ratio * between(r, 1 - GROAN.spread, 1 + GROAN.spread)
     if (f > GROAN.top) break
     ringInto(out, 0, rate, {
       freq: f,
       t60: between(r, GROAN.t60[0], GROAN.t60[1]),
       amp: 1 / (1 + made * 0.35),
       attack: attack * between(r, 0.8, 1.3),
-      drift: between(r, -0.02, 0.02),
+      drift: between(r, -GROAN.drift, GROAN.drift),
       phase: r(),
     })
     made++
+    yield
   }
   // Под модами - низкий шорох нагрузки, глуше 100 Гц.
   const rumble = new Float32Array(n)
   addGrain(rumble, 0, rate, r, { type: 'lowpass', freq: 90, q: 0.7, attack, decay: 1.5, amp: 0.6 })
   for (let i = 0; i < n; i++) out[i] += rumble[i]
+  yield
   toPeak(out)
+  return out
+}
+
+/** Один стон разом, без порций: для проверок. */
+export function renderGroan(rate: number, seed = Math.random() * 1e9): Samples {
+  const g = groanSteps(rate, rng(seed >>> 0))
+  for (;;) {
+    const step = g.next()
+    if (step.done) return step.value
+  }
+}
+
+/**
+ * Набор стонов, посчитанный заранее порциями (`bank.ts`): стон приходит раз в
+ * 40-90 с, и считать его в миг события значило бы уронить кадр. Играется
+ * случайный из набора, с чуть другой скоростью - высота у стона и так плывёт.
+ */
+export function* bakeGroans(count = 4, seed = 89): Generator<void, Samples[]> {
+  const r = rng(seed)
+  const out: Samples[] = []
+  for (let i = 0; i < count; i++) out.push(yield* groanSteps(GROAN.rate, r))
   return out
 }
 

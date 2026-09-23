@@ -24,7 +24,7 @@ import { bakeClock, bakeHum, bakePump, bakeStarter, HUM, PHYTO } from './machine
 import { bakeConcrete, bakeLeaves } from './rain'
 import { bakeImpulse } from './reverb'
 import { bakeRoof } from './roof'
-import { bakeSteel } from './strike'
+import { bakeGroans, bakeSteel, GROAN } from './strike'
 import { bakeBucket, bakeCurtain, bakeDrops, bakeStream } from './water'
 
 /** Частота медленного шума: он качает параметры, а не звучит, и густая сетка ему не нужна. */
@@ -36,7 +36,7 @@ type Baked = Samples | Samples[]
 const JOBS = [
   { name: 'white', set: false, run: bakeWhite },
   { name: 'brown', set: false, run: bakeBrown },
-  { name: 'wander', set: false, run: () => bakeWander() },
+  { name: 'wander', set: false, rate: WANDER_RATE, run: () => bakeWander() },
   { name: 'irForest', set: false, run: (rate: number) => bakeImpulse('forest', rate) },
   { name: 'leavesL', set: false, run: (rate: number) => bakeLeaves(rate, 0) },
   { name: 'leavesR', set: false, run: (rate: number) => bakeLeaves(rate, 1) },
@@ -58,7 +58,9 @@ const JOBS = [
   { name: 'clock', set: false, run: (rate: number) => bakeClock(rate) },
   { name: 'bucket', set: true, run: (rate: number) => bakeBucket(rate) },
   { name: 'pump', set: false, run: (rate: number) => bakePump(rate) },
-] as const satisfies ReadonlyArray<{ name: string; set: boolean; run: (rate: number) => Generator<void, Baked> }>
+  // Стоны корпуса - на своей частоте: всё в них ниже 200 Гц.
+  { name: 'groans', set: true, rate: GROAN.rate, run: () => bakeGroans() },
+] as const satisfies ReadonlyArray<{ name: string; set: boolean; rate?: number; run: (rate: number) => Generator<void, Baked> }>
 
 export type BankName = (typeof JOBS)[number]['name']
 
@@ -120,7 +122,11 @@ export function createBank(rate: number) {
   let next = 0
   let gen: Generator<void, Baked> | null = null
 
-  const rateOf = (name: BankName) => (name === 'wander' ? WANDER_RATE : rate)
+  /** Частота, на которой посчитано: у медленного шума и стонов - своя, у остального - контекста. */
+  const rateOf = (name: BankName): number => {
+    const job = JOBS.find((j) => j.name === name)
+    return job && 'rate' in job ? job.rate : rate
+  }
 
   /** Досчитать текущую работу на шаг. Возвращает false, когда считать больше нечего. */
   function advance(): boolean {

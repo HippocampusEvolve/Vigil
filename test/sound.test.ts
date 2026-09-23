@@ -53,7 +53,7 @@ test('счёт режется на порции: самая долгая не д
 
 test('всё посчитано и конечно', () => {
   assert.equal(bank.pending, 0)
-  for (const name of [...LOOPS, 'white', 'drops', 'bucket', 'steel', 'irForest', 'irPost', 'irLower'] as BankName[]) {
+  for (const name of [...LOOPS, 'white', 'drops', 'bucket', 'steel', 'groans', 'irForest', 'irPost', 'irLower'] as BankName[]) {
     const data = bank.data(name)
     assert.ok(data && data.length > 0, `${name}: пусто`)
     for (const d of data) for (let i = 0; i < d.length; i++) assert.ok(Number.isFinite(d[i]), `${name}: не число на ${i}`)
@@ -105,8 +105,8 @@ test('левая и правая петли дождя разной длины: 
   assert.notEqual(bank.data('roofL')![0].length, bank.data('roofR')![0].length)
 })
 
-test('наборы нутра: у каждого шага по маршу и капли в ведро пик - единица', () => {
-  for (const name of ['steel', 'bucket'] as BankName[]) {
+test('наборы нутра: у каждого шага по маршу, капли в ведро и стона корпуса пик - единица', () => {
+  for (const name of ['steel', 'bucket', 'groans'] as BankName[]) {
     for (const d of bank.data(name)!) {
       let peak = 0
       for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]))
