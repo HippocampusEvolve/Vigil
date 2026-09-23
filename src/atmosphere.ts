@@ -237,7 +237,9 @@ export function createAtmosphere(
 
   renderer.toneMapping = THREE.NoToneMapping
   renderer.shadowMap.enabled = true
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  // Мягкая PCF в three устарела и при отрисовке подменяется обычной: ставим
+  // обычную сразу, иначе программы, собранные заранее, не совпадут с кадром.
+  renderer.shadowMap.type = THREE.PCFShadowMap
 
   const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType })
   composer.addPass(new RenderPass(scene, camera))
@@ -253,9 +255,36 @@ export function createAtmosphere(
   })
   const tone = new ToneMappingEffect({ mode: ToneMappingMode.AGX })
   const grade = new GradeEffect()
-  composer.addPass(new EffectPass(camera, bloom, exposure, tone, grade))
+  const passA = new EffectPass(camera, bloom, exposure, tone, grade)
+  composer.addPass(passA)
   const finish = new FinishEffect()
-  composer.addPass(new EffectPass(camera, new FXAAEffect(), finish))
+  const passB = new EffectPass(camera, new FXAAEffect(), finish)
+  composer.addPass(passB)
+
+  /**
+   * Полноэкранные материалы цепочки: их программы собираются заранее, по
+   * одной на задачу (main.ts, `compileSpread`). Проходы эффектов сперва
+   * собирают свой шейдер из эффектов - `recompile`.
+   */
+  function postMaterials(): Array<[THREE.Material, boolean]> {
+    passA.recompile()
+    passB.recompile()
+    const out: Array<[THREE.Material, boolean]> = []
+    const add = (m: THREE.Material | null | undefined, toScreen = false) => {
+      if (m && !out.some(([x]) => x === m)) out.push([m, toScreen])
+    }
+    const b = bloom as unknown as {
+      luminancePass?: { fullscreenMaterial?: THREE.Material }
+      mipmapBlurPass?: { downsamplingMaterial?: THREE.Material; upsamplingMaterial?: THREE.Material }
+    }
+    add(b.luminancePass?.fullscreenMaterial)
+    add(b.mipmapBlurPass?.downsamplingMaterial)
+    add(b.mipmapBlurPass?.upsamplingMaterial)
+    add(passA.fullscreenMaterial)
+    // Последний проход рисует на экран: его ключ - с выводом в sRGB.
+    add(passB.fullscreenMaterial, true)
+    return out
+  }
 
   // Состояние пелены и вспышки. Живёт здесь, применяется в `update`.
   let veilTimes = 1
@@ -290,6 +319,7 @@ export function createAtmosphere(
 
   return {
     composer,
+    postMaterials,
     fog,
     sky,
     hemi,

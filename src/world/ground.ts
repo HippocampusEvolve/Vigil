@@ -14,7 +14,7 @@
 
 import * as THREE from 'three'
 import { CANOPY, CLEARING } from './layout'
-import { heightAt, trailAt, waterDepth } from './terrain'
+import { groundSample, trailAt } from './terrain'
 import { RAIN_TIME } from './shared'
 
 /** Запас земли за краем поляны: край прячет туман. */
@@ -71,7 +71,14 @@ function vnoise(x: number, z: number): number {
   return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz
 }
 
-export function buildGround(): THREE.Mesh {
+/** Строк сетки за один шаг сборки: столько укладывается в десяток миллисекунд. */
+const ROWS_PER_STEP = 48
+
+/**
+ * Сетка земли по шагам: генератор отдаёт управление после каждой пачки строк,
+ * чтобы сборка не держала поток дольше рамки самой долгой задачи.
+ */
+export function* buildGroundSteps(): Generator<void, THREE.Mesh, void> {
   const xs = axis(CLEARING.minX - MARGIN, CLEARING.maxX + MARGIN, CLEARING.minX - 2, CLEARING.maxX + 2, DETAIL_X)
   const zs = axis(CLEARING.minZ - MARGIN, CLEARING.maxZ + MARGIN, CLEARING.minZ - 2, CLEARING.maxZ + 2, DETAIL_Z)
   const nx = xs.length
@@ -86,7 +93,16 @@ export function buildGround(): THREE.Mesh {
   // Высоты - один проход, нормали - по соседям с настоящим шагом сетки:
   // шаг разный, и деление на него убирает полосы там, где он меняется.
   const h = new Float32Array(nx * nz)
-  for (let iz = 0; iz < nz; iz++) for (let ix = 0; ix < nx; ix++) h[iz * nx + ix] = heightAt(xs[ix], zs[iz])
+  const water = new Float32Array(nx * nz)
+  const sample = { h: 0, water: 0 }
+  for (let iz = 0; iz < nz; iz++) {
+    for (let ix = 0; ix < nx; ix++) {
+      groundSample(xs[ix], zs[iz], sample)
+      h[iz * nx + ix] = sample.h
+      water[iz * nx + ix] = sample.water
+    }
+    if (iz % ROWS_PER_STEP === ROWS_PER_STEP - 1) yield
+  }
 
   let i = 0
   for (let iz = 0; iz < nz; iz++) {
@@ -110,10 +126,9 @@ export function buildGround(): THREE.Mesh {
       nor[i * 3 + 2] = -dhdz * inv
 
       const trail = trailAt(x, z)
-      const water = waterDepth(x, z)
       // Под навесом сухо: дождь туда не достаёт.
       const sheltered = x > CANOPY.x0 && x < CANOPY.x1 && z > 0 && z < CANOPY.z1 - 0.2
-      const puddle = water > 0.004 ? 1 : 0
+      const puddle = water[i] > 0.004 ? 1 : 0
       wet[i] = sheltered ? 0 : Math.max(puddle, trail * 0.55, 0.2)
 
       const n = vnoise(x * 0.35, z * 0.35) * 0.6 + vnoise(x * 1.7, z * 1.7) * 0.4
@@ -124,6 +139,7 @@ export function buildGround(): THREE.Mesh {
       col[i * 3 + 1] = c.g
       col[i * 3 + 2] = c.b
     }
+    if (iz % ROWS_PER_STEP === ROWS_PER_STEP - 1) yield
   }
 
   const index: number[] = []

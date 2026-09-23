@@ -55,6 +55,8 @@ export type Post = {
   tube: THREE.Mesh
   /** Ореол трубки: ядро не тоньше пикселя и рассеяние в дожде. */
   glow: THREE.Mesh
+  /** Детали по отдельности, для проверки наложений. */
+  bodies: Array<{ name: string; geometry: THREE.BufferGeometry }>
 }
 
 /**
@@ -207,14 +209,24 @@ function lampGlow(): THREE.Mesh {
   return mesh
 }
 
+/** Список кусков одного материала, у каждого куска - имя детали. */
+class Pieces extends Array<THREE.BufferGeometry> {
+  names: string[] = []
+}
+
 export function buildPost(): Post {
   const parts: Part[] = []
+  const concrete = new Pieces()
+  const metal = new Pieces()
+  const glass = new Pieces()
+  /**
+   * Пометить деталь: рамка для подписи и имя всем кускам, добавленным с
+   * прошлой пометки. По именам проверка собирает тела для наложений.
+   */
   const note = (name: string, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): void => {
     parts.push({ name, x0, x1, y0, y1, z0, z1 })
+    for (const list of [concrete, metal, glass]) while (list.names.length < list.length) list.names.push(name)
   }
-  const concrete: THREE.BufferGeometry[] = []
-  const metal: THREE.BufferGeometry[] = []
-  const glass: THREE.BufferGeometry[] = []
   const t = HANGAR.wallThick
 
   // --- Ангар -------------------------------------------------------------------
@@ -278,8 +290,9 @@ export function buildPost(): Post {
       paint(box(h.u0 + FRAME, h.u1 - FRAME, h.v1 - FRAME, h.v1, fz0, fz1), PAINT.frame),
       paint(box(cx - 0.015, cx + 0.015, h.v0 + FRAME, h.v1 - FRAME, fz0, fz1 - 0.01), PAINT.frame),
     )
+    // Стекло за переплётом, а не вровень с ним: ближе сантиметра - полосы.
     const pane = new THREE.PlaneGeometry(h.u1 - h.u0 - 2 * FRAME, h.v1 - h.v0 - 2 * FRAME)
-    pane.translate(cx, (h.v0 + h.v1) / 2, GLASS_Z)
+    pane.translate(cx, (h.v0 + h.v1) / 2, GLASS_Z - 0.015)
     glass.push(paint(pane, 0xffffff))
     const boards = 6
     const gap = 0.012
@@ -389,10 +402,19 @@ export function buildPost(): Post {
   metal.push(paint(pipe(v(LAMP_SWITCH.x, LAMP_SWITCH.y, BLOCK.z1 + LAMP_SWITCH.d), v(LAMP_SWITCH.x, LAMP_SWITCH.y + 0.03, BLOCK.z1 + LAMP_SWITCH.d + 0.04), 0.006, 8), PAINT.steel))
   note('выключатель', sx0, sx1, sy0, sy1, BLOCK.z1, BLOCK.z1 + LAMP_SWITCH.d + 0.05)
 
-  // Табличка - на отступе от стены: плоское поверх плоского без зазора - это
-  // полосы, а не замысел.
-  metal.push(paint(box(SIGN.x0, SIGN.x1, SIGN.y0, SIGN.y1, BLOCK.z1 + 0.004, BLOCK.z1 + 0.009), PAINT.enamel))
-  note('табличка', SIGN.x0, SIGN.x1, SIGN.y0, SIGN.y1, BLOCK.z1, BLOCK.z1 + 0.009)
+  // Табличка - на шайбах, лицом дальше сантиметра от стены: плоское поверх
+  // плоского ближе этого в кадре полосит (проверка копланарности).
+  const SIGN_OFF = 0.009
+  metal.push(paint(box(SIGN.x0, SIGN.x1, SIGN.y0, SIGN.y1, BLOCK.z1 + SIGN_OFF, BLOCK.z1 + SIGN_OFF + 0.005), PAINT.enamel))
+  for (const [sx, sy] of [
+    [SIGN.x0 + 0.04, SIGN.y0 + 0.04],
+    [SIGN.x1 - 0.04, SIGN.y0 + 0.04],
+    [SIGN.x0 + 0.04, SIGN.y1 - 0.04],
+    [SIGN.x1 - 0.04, SIGN.y1 - 0.04],
+  ]) {
+    metal.push(paint(box(sx - 0.008, sx + 0.008, sy - 0.008, sy + 0.008, BLOCK.z1, BLOCK.z1 + SIGN_OFF), PAINT.steel))
+  }
+  note('табличка', SIGN.x0, SIGN.x1, SIGN.y0, SIGN.y1, BLOCK.z1, BLOCK.z1 + SIGN_OFF + 0.005)
 
   // --- Водосток, выхлоп ------------------------------------------------------------
   const roofTop = CANOPY.y + CANOPY.thick
@@ -426,8 +448,9 @@ export function buildPost(): Post {
   ]) {
     const x = T.x + dx
     const z = T.z + dz
-    // Нога уходит в грязь: так стоит любая стойка на размокшей земле.
-    metal.push(paint(box(x - 0.03, x + 0.03, heightAt(x, z) - 0.15, T.stand, z - 0.03, z + 0.03), PAINT.rustDark))
+    // Нога уходит в грязь: так стоит любая стойка на размокшей земле. Сверху
+    // она упирается в раму снизу, а не выходит с ней вровень.
+    metal.push(paint(box(x - 0.03, x + 0.03, heightAt(x, z) - 0.15, T.stand - 0.06, z - 0.03, z + 0.03), PAINT.rustDark))
   }
   metal.push(
     paint(box(T.x - leg - 0.03, T.x + leg + 0.03, T.stand - 0.06, T.stand, T.z - leg - 0.03, T.z - leg + 0.03), PAINT.rustDark),
@@ -511,5 +534,17 @@ export function buildPost(): Post {
   led.name = 'intercom-led'
 
   group.add(concreteMesh, metalMesh, glassMesh, tube, glow, led)
-  return { group, solid: [concreteMesh, metalMesh], parts, tube, glow }
+
+  // Тела по деталям: куски одного имени из бетона и металла вместе. Стекло -
+  // плоскость без толщины, телом оно не бывает.
+  const byName = new Map<string, THREE.BufferGeometry[]>()
+  for (const list of [concrete, metal]) {
+    list.forEach((g, i) => {
+      const name = list.names[i] ?? 'без имени'
+      byName.set(name, [...(byName.get(name) ?? []), g])
+    })
+  }
+  const bodies = [...byName].map(([name, geos]) => ({ name, geometry: merge(geos) }))
+
+  return { group, solid: [concreteMesh, metalMesh], parts, tube, glow, bodies }
 }

@@ -260,7 +260,7 @@ export function leafAtlas(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas')
   canvas.width = CELL * COLS
   canvas.height = CELL * ROWS
-  const g = canvas.getContext('2d')!
+  const g = canvas.getContext('2d', { willReadFrequently: true })!
   const r = rng(77)
   for (const kind of Object.keys(LEAF) as LeafKind[]) {
     const i = LEAF[kind]

@@ -40,7 +40,7 @@ import * as THREE from 'three'
 import { Body, Input, SmoothLook } from 'world-core/core'
 import { createShell } from './shell'
 import { keepOffline } from './offline'
-import { createAtmosphere } from './atmosphere'
+import { createAtmosphere, type Atmosphere } from './atmosphere'
 import { createAmbient } from './ambient'
 import { createAwakening, type Awakening } from './awaken'
 import { createSupport, STEP_UP } from './support'
@@ -73,35 +73,30 @@ const qualityName: QualityName =
     : autoQuality
 const qualityDpr = { high: 1.75, medium: 1.35, low: 1 }[qualityName]
 
-const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
-renderer.setSize(innerWidth, innerHeight)
-document.body.appendChild(renderer.domElement)
-
 const scene = new THREE.Scene()
 const camera = new THREE.PerspectiveCamera(BODY.fov, innerWidth / innerHeight, 0.05, SKY_RADIUS + 20)
-const atmosphere = createAtmosphere(scene, camera, renderer, { phone })
+
+// Рендерер, атмосфера и погода заводятся в `boot()` - каждый своей задачей:
+// создание контекста видеокарты, конструктор three, цепочка кадра и струи
+// дождя вместе с исполнением модуля складывались в одну задачу больше 60 мс.
+let renderer!: THREE.WebGLRenderer
+let atmosphere!: Atmosphere
+let weather!: Weather
 
 /**
  * Масштаб рендера: доля пикселей устройства. Мир меряет кадр и убавляет себе
  * тяжёлое молча (look.md, «Телефон»): сперва масштаб, до половины.
  */
 const SCALE_MIN = 0.5
-let renderScale: number = atmosphere.renderScale
+let renderScale = 1
 function applyScale(): void {
   renderer.setPixelRatio(Math.min(devicePixelRatio, qualityDpr) * renderScale)
   renderer.setSize(innerWidth, innerHeight)
   atmosphere.composer.setSize(innerWidth, innerHeight)
 }
-applyScale()
 
-// --- Звук и погода ------------------------------------------------------------
+// --- Звук ---------------------------------------------------------------------
 const ambient = createAmbient()
-const weather: Weather = createWeather({
-  quality: qualityName,
-  onStrike: (s) => atmosphere.sky.setStrike(s.azimuth, s.near ? 15 : 8 + s.power * 5),
-  onThunder: (delay, near) => (ambient as { thunder?(d: number, n: boolean): void }).thunder?.(delay, near),
-})
-scene.add(weather.group)
 
 // --- Сборка по шагам ---------------------------------------------------------------
 /** Отдать поток: `MessageChannel`, а не таймер - у таймера шаг 4 мс и больше. */
@@ -130,7 +125,7 @@ async function buildWorld(): Promise<World> {
 
 // Отладочный хендл: из консоли доступны камера, игрок, сцена, атмосфера.
 // Игрок его не видит - в кадре нет ни панелей, ни счётчиков.
-const debug: Record<string, unknown> = { scene, camera, atmosphere, weather, ambient, renderer, heightAt, layer, THREE }
+const debug: Record<string, unknown> = { scene, camera, ambient, heightAt, layer, THREE }
 Object.assign(window, { vigil: debug })
 
 /**
@@ -141,6 +136,36 @@ Object.assign(window, { vigil: debug })
 const FALL_RESET_Y = -20
 
 async function boot(): Promise<void> {
+  // Контекст видеокарты - отдельной задачей: первый контекст в браузере
+  // будит процесс видеокарты, и это десятки миллисекунд сами по себе.
+  const canvas = document.createElement('canvas')
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: false,
+    depth: true,
+    stencil: false,
+    premultipliedAlpha: true,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance',
+  })
+  await yieldTask()
+  renderer = new THREE.WebGLRenderer({ canvas, context: gl ?? undefined, antialias: false, powerPreference: 'high-performance' })
+  renderer.setSize(innerWidth, innerHeight)
+  document.body.appendChild(renderer.domElement)
+  await yieldTask()
+  atmosphere = createAtmosphere(scene, camera, renderer, { phone })
+  renderScale = atmosphere.renderScale
+  applyScale()
+  await yieldTask()
+  weather = createWeather({
+    quality: qualityName,
+    onStrike: (s) => atmosphere.sky.setStrike(s.azimuth, s.near ? 15 : 8 + s.power * 5),
+    onThunder: (delay, near) => ambient.thunder(delay, near),
+  })
+  scene.add(weather.group)
+  Object.assign(debug, { renderer, atmosphere, weather })
+  await yieldTask()
+
   const t0 = performance.now()
   const world = await buildWorld()
   scene.add(world.group)
@@ -315,41 +340,84 @@ async function boot(): Promise<void> {
     else shell.open()
   })
 
-  // --- Прогрев и первый кадр -----------------------------------------------------
-  // Первый кадр - обычный, с живым culling'ом: компилируется только то, что
-  // видно из точки входа, и после него мир можно показывать. Остальная сцена
-  // прогревается ПОРЦИЯМИ ПО КАДРАМ с бюджетом на порцию: кнопка на экране
-  // входа должна отвечать и в это время (тот же приём, что `warmSceneSpread`
-  // в Snowfall).
-  const WARM_BUDGET_MS = 12
-
-  function nextFrame(): Promise<void> {
-    return new Promise((resolve) => requestAnimationFrame(() => resolve()))
-  }
-
-  async function warmSpread(): Promise<void> {
-    const pend: THREE.Object3D[] = []
-    scene.traverse((o) => {
-      const drawable = o as THREE.Object3D & { isMesh?: boolean; isPoints?: boolean; isLine?: boolean }
-      if ((drawable.isMesh || drawable.isPoints || drawable.isLine) && o.frustumCulled && o.visible) pend.push(o)
-    })
+  // --- Компиляция и первый кадр ----------------------------------------------------
+  // Каждая программа шейдера компилируется синхронно там, где нет параллельной
+  // компиляции (программный GL, часть телефонов), и полсотни программ первым
+  // кадром - это задача в полсекунды. Поэтому программы собираются ПО ОДНОЙ НА
+  // ЗАДАЧУ: объект сцены, потом проходы кадра, потом атлас листвы. Там, где
+  // параллельная компиляция есть, это же проходит быстрее и ничем не мешает.
+  // Прогрева порциями по кадрам после этого не нужно: `compile` берёт всю
+  // сцену, а не только то, что видно из точки входа.
+  async function compileSpread(): Promise<void> {
     mark('прогрев начат')
-    let size = 4
-    for (let i = 0; i < pend.length; ) {
-      const part = pend.slice(i, i + size)
-      i += part.length
-      for (const o of part) o.frustumCulled = false
-      const t = performance.now()
-      atmosphere.composer.render()
-      // Дождаться, пока нарисованное действительно нарисуется: без этого цена
-      // порции врёт в меньшую сторону, а отложенный счёт приходит потом разом.
-      renderer.getContext().finish()
-      const spent = performance.now() - t
-      for (const o of part) o.frustumCulled = true
-      size = spent > WARM_BUDGET_MS ? Math.max(1, size >> 1) : Math.min(32, size + 2)
-      await nextFrame()
+    const sync = (m: THREE.Material): void => {
+      const program = (renderer.properties.get(m) as { currentProgram?: { getUniforms(): unknown } }).currentProgram
+      program?.getUniforms()
     }
-    mark(`прогрев кончен (${pend.length} объектов)`)
+    const seen = new Set<string>()
+    const objects: THREE.Object3D[] = []
+    scene.traverse((o) => {
+      const mesh = o as THREE.Mesh & { isInstancedMesh?: boolean; isPoints?: boolean; isLine?: boolean }
+      if (!(mesh.isMesh || mesh.isPoints || mesh.isLine) || !o.visible) return
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      const key = mats.map((m) => m.uuid).join() + (mesh.isInstancedMesh ? ':i' : '')
+      if (seen.has(key)) return
+      seen.add(key)
+      objects.push(o)
+    })
+    let slowest = 0
+    let slowestName = ''
+    const note = (name: string, t: number): void => {
+      const spent = performance.now() - t
+      if (spent > slowest) {
+        slowest = spent
+        slowestName = name
+      }
+    }
+    // Сцена рисуется в буфер композера, а не на экран: у программ для буфера
+    // другой ключ (линейный цвет), и собирать их надо под него же.
+    const target = atmosphere.composer.inputBuffer
+    for (const o of objects) {
+      const t = performance.now()
+      renderer.setRenderTarget(target)
+      for (const m of renderer.compile(o, camera, scene)) sync(m)
+      renderer.setRenderTarget(null)
+      note(o.name || o.type, t)
+      await yieldTask()
+    }
+    // Проходы кадра: у каждого свои полноэкранные материалы.
+    const flat = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
+    for (const [m, toScreen] of atmosphere.postMaterials()) {
+      const t = performance.now()
+      // Держатель - как полноэкранный треугольник postprocessing: без нормалей,
+      // иначе ключ программы другой и она соберётся заново первым кадром.
+      const plane = new THREE.PlaneGeometry(2, 2)
+      plane.deleteAttribute('normal')
+      const holder = new THREE.Mesh(plane, m)
+      renderer.setRenderTarget(toScreen ? null : target)
+      for (const c of renderer.compile(holder, flat)) sync(c)
+      renderer.setRenderTarget(null)
+      plane.dispose()
+      note(m.name || m.type, t)
+      await yieldTask()
+    }
+    // Атлас листвы и прочие карты: загрузка в видеопамять - тоже работа.
+    scene.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshLambertMaterial | undefined
+      if (m && !Array.isArray(m) && m.map) renderer.initTexture(m.map)
+    })
+    await yieldTask()
+    // Тень лампы: программа глубины собирается при первой отрисовке сцены -
+    // пусть это будет своя задача, а не часть первого кадра.
+    {
+      const t = performance.now()
+      renderer.setRenderTarget(target)
+      renderer.render(scene, camera)
+      renderer.setRenderTarget(null)
+      note('тень', t)
+    }
+    console.log(`[vigil] программ собрано по одной: ${objects.length}, дольше всех ${slowestName} - ${slowest.toFixed(0)} мс`)
+    mark(`прогрев кончен (${objects.length} объектов)`)
   }
 
   // --- Туман экрана входа -----------------------------------------------------
@@ -432,10 +500,6 @@ async function boot(): Promise<void> {
       debug.firstFrame = renderer.domElement.toDataURL('image/png')
       debug.captureFirst = false
     }
-    if (debug.captureNext) {
-      debug.nextFrame = renderer.domElement.toDataURL('image/png')
-      debug.captureNext = false
-    }
 
     if (awake && !document.body.classList.contains('paused')) {
       slowFor = raw > FRAME_BUDGET && raw < 0.2 ? slowFor + raw : Math.max(0, slowFor - raw * 0.5)
@@ -447,22 +511,20 @@ async function boot(): Promise<void> {
     }
   }
 
-  // Первый кадр: пелену пробуждение уже выставило, туман собирается в `update`.
-  requestAnimationFrame(() => {
-    atmosphere.update(0)
-    weather.update(0, camera, false)
-    atmosphere.composer.render()
-    mark('первый кадр')
-    // Экран входа уже открыт - мир лишь забирает его себе. Туман меню при
-    // этом не снимается: его снимет `tryUnveil`, когда сойдётся всё.
-    shell.ready()
-    renderer.setAnimationLoop(frame)
-    keepOffline() // следующий приход в мир - без сети (offline.ts)
-    void warmSpread().then(() => {
-      warmDone = true
-      tryUnveil()
-    })
-  })
+  // Первый кадр - после того как собраны программы: тогда он дешёвый.
+  await compileSpread()
+  await yieldTask()
+  atmosphere.update(0)
+  weather.update(0, camera, false)
+  atmosphere.composer.render()
+  mark('первый кадр')
+  // Экран входа уже открыт - мир лишь забирает его себе. Туман меню при этом
+  // не снимается: его снимет `tryUnveil`, когда сойдётся всё.
+  shell.ready()
+  renderer.setAnimationLoop(frame)
+  keepOffline() // следующий приход в мир - без сети (offline.ts)
+  warmDone = true
+  tryUnveil()
 }
 
 void boot()

@@ -189,7 +189,20 @@ const PALMS: ReadonlyArray<readonly [number, number]> = [
   [-14.5, -12.8],
 ]
 
+/** План целиком одним куском: для проверок на Node. */
 export function planForest(): ForestPlan {
+  const steps = planForestSteps()
+  for (;;) {
+    const r = steps.next()
+    if (r.done) return r.value
+  }
+}
+
+/**
+ * План по шагам: генератор отдаёт управление между посадками, чтобы в
+ * браузере ни один кусок не держал поток дольше рамки самой долгой задачи.
+ */
+export function* planForestSteps(): Generator<void, ForestPlan, void> {
   const r = rng(20260923)
   const boundary = buildBoundary()
   const inside = (x: number, z: number) => insidePolygon(boundary, x, z)
@@ -323,6 +336,8 @@ export function planForest(): ForestPlan {
     hangs.push({ kind: 'vine', x: t.x + Math.cos(a) * d, y, z: t.z + Math.sin(a) * d, length: 3 + r() * 9, yaw: r() * Math.PI })
   }
 
+  yield
+
   // --- Подлесок и папоротник -------------------------------------------------------
   /** Пятно у края: чуть внутри поляны или в лесу за ним. */
   const edgeSpot = (): [number, number] | null => {
@@ -356,13 +371,17 @@ export function planForest(): ForestPlan {
     const z = CLEARING.minZ + r() * (CLEARING.maxZ - CLEARING.minZ)
     return inside(x, z) && edgeDistance(boundary, x, z) < 9 ? [x, z] : null
   }, [0.6, 1.1])
+  yield
   sow('split', COUNT.split, edgeSpot, [0.7, 1.2])
   // Крупный подлесок слева от места пролога: тёмный край первого кадра.
   sow('broad', 26, () => [-15 + r() * 8, 11 + r() * 10], [1.3, 1.9])
+  yield
   // Папоротник: край и передний план слева от места пролога.
   sow('fern', Math.round(COUNT.fern * 0.5), edgeSpot, [0.6, 1.2])
   sow('fern', Math.round(COUNT.fern * 0.3), () => [-13 + r() * 9, 16 + r() * 15], [0.6, 1.1])
   sow('fern', Math.round(COUNT.fern * 0.2), () => [CLEARING.minX + r() * 54, CLEARING.minZ + r() * 48], [0.5, 0.9])
+
+  yield
 
   // --- Трава: у стен, в трещинах отмостки, на крышах, по поляне ---------------------
   sow('grass', Math.round(COUNT.grass * 0.35), () => {

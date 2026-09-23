@@ -152,6 +152,22 @@ export function heightAt(x: number, z: number): number {
   return h < level ? level : h
 }
 
+/**
+ * Высота и глубина воды одним заходом: сетка земли спрашивает обе в каждой
+ * вершине, а по отдельности они считали бы рельеф дважды.
+ */
+export function groundSample(x: number, z: number, out: { h: number; water: number }): void {
+  const h = rawHeight(x, z)
+  const level = puddleLevel(x, z)
+  if (h < level) {
+    out.h = level
+    out.water = level - h
+  } else {
+    out.h = h
+    out.water = 0
+  }
+}
+
 /** Глубина воды над грязью, м: 0 - сухо. По ней шаг решает, брызгать ли. */
 export function waterDepth(x: number, z: number): number {
   const level = puddleLevel(x, z)

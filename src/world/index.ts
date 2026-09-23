@@ -15,9 +15,9 @@
 import * as THREE from 'three'
 import { BODY } from '../player'
 import { heightAt } from './terrain'
-import { buildGround } from './ground'
+import { buildGroundSteps } from './ground'
 import { buildPost, type Post } from './post'
-import { planForest, type ForestPlan } from './forest-plan'
+import { planForestSteps, type ForestPlan } from './forest-plan'
 import { buildForest, type Forest } from './forest'
 import { buildCables } from './cables'
 import { buildBounds } from './bounds'
@@ -131,7 +131,16 @@ export function* buildWorldSteps(aspect: number): Generator<string, World, void>
   const solid = new THREE.Group()
   solid.name = 'solid'
 
-  group.add(buildGround())
+  // Земля и план леса сами режутся на порции: `yield*` отдаёт их шаги наверх.
+  const groundSteps = buildGroundSteps()
+  for (;;) {
+    const r = groundSteps.next()
+    if (r.done) {
+      group.add(r.value)
+      break
+    }
+    yield 'земля'
+  }
   yield 'земля'
 
   const post = buildPost()
@@ -142,7 +151,16 @@ export function* buildWorldSteps(aspect: number): Generator<string, World, void>
   LAMP.power.value = 1
   yield 'пост'
 
-  const plan = planForest()
+  const planSteps = planForestSteps()
+  let plan: ForestPlan
+  for (;;) {
+    const r = planSteps.next()
+    if (r.done) {
+      plan = r.value
+      break
+    }
+    yield 'план леса'
+  }
   yield 'план леса'
 
   const forest = buildForest(plan)
