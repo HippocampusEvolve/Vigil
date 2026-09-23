@@ -2,10 +2,12 @@
  * awaken.ts — вход в мир как пробуждение, а не как переключатель.
  *
  * Общий файл миров find-the-end.fun, перенесён из Winter Tower копией
- * (docs/games.md, «Появление мира»). Своё у этого мира одно: игрок не просто
+ * (docs/games.md, «Появление мира»). Своё у этого мира два: игрок не просто
  * поднимает взгляд, а встаёт с земли. Глаз начинает у самой земли и за время
  * пробуждения поднимается до роста (`eye`, `setEye`), а взгляд, опущенный в
- * землю, находит лампу (`yaw`, `pitch`).
+ * землю, находит лампу (`yaw`, `pitch`) и собирается на ней: угол обзора
+ * сужается (`fov`, `setFov`). Раскрывается он потом сам - тело ведёт камеру
+ * к своему углу медленно (`fovRate` в player.ts).
  *
  * Простая идея. Мир проступает из темноты сквозь плотную пелену; за титулом
  * он виден, но далёк и приглушён; по нажатию пелена отходит вглубь, свет
@@ -110,6 +112,10 @@ export function createAwakening(opts: {
   eye: { from: number; to: number }
   /** Поставить глаз на высоту над ступнёй. Цикл тело не зовёт - ставим сами. */
   setEye(height: number): void
+  /** Угол обзора по вертикали в начале и в конце пробуждения, градусы. */
+  fov?: { from: number; to: number }
+  /** Поставить угол обзора камеры. */
+  setFov?(deg: number): void
   /** Громкость мира: 0 — тишина, 1 — как задумано. */
   setSound(level: number): void
   /** Готов ли мир пустить игрока — дерево коллизий собрано. */
@@ -155,11 +161,17 @@ export function createAwakening(opts: {
     opts.setEye(mix(opts.eye.from, opts.eye.to, t))
   }
 
+  /** Собрать взгляд: t = 0 — рассеян, t = 1 — на лампе. */
+  function focus(t: number): void {
+    if (opts.fov && opts.setFov) opts.setFov(mix(opts.fov.from, opts.fov.to, t))
+  }
+
   // Первый кадр рисуется в темноте и под плотной пеленой: мир уже собран, но
   // его ещё не видно. Иначе он возникает готовым, и это тот самый рывок.
   set(FOG_DARK, TINT_DARK, LIGHT_DARK)
   aim(0)
   rise(0)
+  focus(0)
 
   return {
     reveal() {
@@ -197,12 +209,15 @@ export function createAwakening(opts: {
         set(mix(fogAtEnter, 1, k), mix(tintAtEnter, 0, k), mix(lightAtEnter, 1, k), easeOut(t))
         aim(mix(aimAtEnter, 1, k))
         rise(mix(riseAtEnter, 1, ease(clamp01((t - RISE_LAG) / (1 - RISE_LAG)))))
+        // Взгляд собирается на лампе во второй половине: сперва найти, потом вглядеться.
+        focus(ease(clamp01((t - 0.35) / 0.65)))
         // Время вышло, но мир ещё не готов — держим последний кадр пелены,
         // а не отдаём управление в недособранный мир.
         if (t >= 1 && opts.ready()) {
           set(1, 0, 1, 1)
           aim(1)
           rise(1)
+          focus(1)
           phase = 'awake'
         }
         return

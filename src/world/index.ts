@@ -1,18 +1,29 @@
 /**
- * world/index.ts — сборка мира.
+ * world/index.ts — сборка мира по шагам.
  *
- * Сейчас это заготовка: земля поляны, болванка поста простыми объёмами и
- * лампа над дверью. Числа болванки - настоящие, из `layout.ts`, поэтому
- * силуэт, свет лампы и дерево коллизий уже стоят там, где будут стоять;
- * меняться будет форма, а не место.
+ * Мир собирается синхронно и без сети, но не одним куском: каждый шаг -
+ * отдельная задача главного потока, между шагами браузер свободен. Самая
+ * долгая задача входа обязана укладываться в 60 мс (docs/architecture.md,
+ * «Рамки»), а лес, земля и пост одним куском в неё не влезают.
  *
- * Мир собирается синхронно и без сети: ни одного файла, всё кодом.
+ * Поэтому сборка - генератор: `buildWorldSteps()` отдаёт имя очередного шага,
+ * а тот, кто её ведёт (main.ts), решает, когда звать следующий. Лес рисует
+ * атлас на канве, поэтому целиком мир собирается только в браузере; проверки
+ * на Node берут его куски по отдельности (пост, план леса, кабели, края).
  */
 
 import * as THREE from 'three'
 import { BODY } from '../player'
 import { heightAt } from './terrain'
-import { BLOCK, CANOPY, CLEARING, ENTRY_LAMP, HANGAR, PLINTH, WAKE_POINT } from './layout'
+import { buildGround } from './ground'
+import { buildPost, type Post } from './post'
+import { planForest, type ForestPlan } from './forest-plan'
+import { buildForest, type Forest } from './forest'
+import { buildCables } from './cables'
+import { buildBounds } from './bounds'
+import { buildFlashlight, type Flashlight } from './flashlight'
+import { ENTRY_LAMP, FOCUS_FOV, LAMP_IN_FRAME, WAKE_POINT } from './layout'
+import { LAMP } from './shared'
 
 export type World = {
   /** Всё, что рисуется. */
@@ -21,104 +32,142 @@ export type World = {
   solid: THREE.Group
   /** Где стоят ступни в начале. */
   spawn: THREE.Vector3
-  /** Куда смотреть, когда взгляд поднялся: на лампу. */
+  /** Куда смотреть, когда взгляд поднялся: лампа в своей точке кадра. */
   yaw: number
   pitch: number
+  plan: ForestPlan
+  post: Post
+  forest: Forest
+  flashlight: Flashlight
+  lamp: THREE.SpotLight
+  /** Перекадрировать взгляд под новое соотношение сторон экрана. */
+  aim(aspect: number): { yaw: number; pitch: number }
 }
 
-/**
- * Запас земли за краем поляны. Край прячет туман: на таком расстоянии он
- * съедает цвет почти целиком, и конец плоскости не читается.
- */
-const GROUND_MARGIN = 30
+/** Лампа входа: числа света - look.md, «Лампа входа». */
+export const LAMP_LIGHT = {
+  color: 0x6cb398,
+  intensity: 105,
+  /** Полуугол конуса, рад: широкий, как у трубки под навесом. */
+  angle: (70 * Math.PI) / 180,
+  penumbra: 0.35,
+  distance: 12,
+  decay: 2,
+  shadow: 512,
+} as const
 
-/**
- * Альбедо держим в середине, а темноту делаем туманом и экспозицией: чёрный
- * материал в ночном кадре не даёт ни силуэта, ни отсвета.
- */
-const MUD = 0x5f5c4a
-const CONCRETE = 0x7d857f
-
-function box(x0: number, x1: number, y0: number, y1: number, z0: number, z1: number, mat: THREE.Material): THREE.Mesh {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), mat)
-  mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)
-  return mesh
-}
-
-/** Свод ангара: половина эллиптического цилиндра вдоль X, от стен до гребня. */
-function vault(mat: THREE.Material): THREE.Mesh {
-  const length = HANGAR.x1 - HANGAR.x0
-  const half = (HANGAR.z1 - HANGAR.z0) / 2
-  const rise = HANGAR.ridge - HANGAR.wall
-  // Цилиндр three стоит по Y; после поворота на четверть оборота вокруг Z его
-  // ось идёт по X, а верхняя половина сечения - это углы от 0 до π.
-  const geo = new THREE.CylinderGeometry(1, 1, length, 32, 1, false, 0, Math.PI)
-  geo.rotateZ(Math.PI / 2)
-  geo.scale(1, rise, half)
-  const mesh = new THREE.Mesh(geo, mat)
-  mesh.position.set((HANGAR.x0 + HANGAR.x1) / 2, HANGAR.wall, (HANGAR.z0 + HANGAR.z1) / 2)
-  return mesh
-}
-
-function lamp(): THREE.Group {
-  const group = new THREE.Group()
-  group.name = 'entry-lamp'
+function buildLamp(): THREE.SpotLight {
   const x = (ENTRY_LAMP.x0 + ENTRY_LAMP.x1) / 2
-  const length = ENTRY_LAMP.x1 - ENTRY_LAMP.x0
-
-  // Трубка светится сама: цвет выше единицы нужен, чтобы после тонмаппинга
-  // она оставалась самым ярким в кадре.
-  const glow = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x6cb398).multiplyScalar(2.5), fog: false })
-  const tube = new THREE.Mesh(new THREE.CylinderGeometry(ENTRY_LAMP.radius, ENTRY_LAMP.radius, length, 12), glow)
-  tube.rotation.z = Math.PI / 2
-  tube.position.set(x, ENTRY_LAMP.y, ENTRY_LAMP.z)
-  group.add(tube)
-
-  // Свет лампы - прожектор вниз и вперёд, на отмостку и поляну перед дверью.
-  const light = new THREE.SpotLight(0x6cb398, 25, 0, 1.15, 0.65, 2)
-  light.position.set(x, ENTRY_LAMP.y - 0.05, ENTRY_LAMP.z + 0.08)
-  light.target.position.set(x, 0, 5)
-  group.add(light, light.target)
-  return group
+  const light = new THREE.SpotLight(
+    LAMP_LIGHT.color,
+    LAMP_LIGHT.intensity,
+    LAMP_LIGHT.distance,
+    LAMP_LIGHT.angle,
+    LAMP_LIGHT.penumbra,
+    LAMP_LIGHT.decay,
+  )
+  light.name = 'entry-lamp'
+  // Из-под трубки вниз-вперёд: на дверь, отмостку и поляну перед входом.
+  light.position.set(x, ENTRY_LAMP.y - 0.04, ENTRY_LAMP.z + 0.05)
+  light.target.position.set(x, 0, ENTRY_LAMP.z + 1.4)
+  light.castShadow = true
+  light.shadow.mapSize.set(LAMP_LIGHT.shadow, LAMP_LIGHT.shadow)
+  light.shadow.camera.near = 0.1
+  light.shadow.camera.far = LAMP_LIGHT.distance
+  light.shadow.bias = -0.0008
+  light.shadow.normalBias = 0.02
+  return light
 }
 
-export function buildWorld(): World {
+/**
+ * Взгляд, при котором лампа ложится в `LAMP_IN_FRAME`: доли ширины и высоты
+ * кадра. Считается проекцией настоящей камеры, а не формулой углов: при
+ * повороте головы вбок вертикаль в перспективе тоже уезжает.
+ */
+export function aimAtLamp(spawn: THREE.Vector3, aspect: number, fov: number = FOCUS_FOV): { yaw: number; pitch: number } {
+  const cam = new THREE.PerspectiveCamera(fov, aspect, 0.05, 100)
+  cam.position.set(spawn.x, spawn.y + BODY.eye, spawn.z)
+  cam.rotation.order = 'YXZ'
+  const lamp = new THREE.Vector3((ENTRY_LAMP.x0 + ENTRY_LAMP.x1) / 2, ENTRY_LAMP.y, ENTRY_LAMP.z)
+  const want = new THREE.Vector2(LAMP_IN_FRAME.x * 2 - 1, 1 - LAMP_IN_FRAME.y * 2)
+  const dx = lamp.x - cam.position.x
+  const dz = lamp.z - cam.position.z
+  let yaw = Math.atan2(-dx, -dz)
+  let pitch = Math.atan2(lamp.y - cam.position.y, Math.hypot(dx, dz))
+  const p = new THREE.Vector3()
+  // Несколько шагов Ньютона по двум углам: сходится за три-четыре.
+  for (let i = 0; i < 8; i++) {
+    cam.rotation.set(pitch, yaw, 0)
+    cam.updateMatrixWorld()
+    p.copy(lamp).project(cam)
+    const ex = p.x - want.x
+    const ey = p.y - want.y
+    if (Math.abs(ex) < 1e-5 && Math.abs(ey) < 1e-5) break
+    const h = 1e-4
+    cam.rotation.set(pitch, yaw + h, 0)
+    cam.updateMatrixWorld()
+    const px = p.clone().copy(lamp).project(cam)
+    cam.rotation.set(pitch + h, yaw, 0)
+    cam.updateMatrixWorld()
+    const py = lamp.clone().project(cam)
+    const j11 = (px.x - p.x) / h
+    const j21 = (px.y - p.y) / h
+    const j12 = (py.x - p.x) / h
+    const j22 = (py.y - p.y) / h
+    const det = j11 * j22 - j12 * j21
+    yaw -= (ex * j22 - ey * j12) / det
+    pitch -= (ey * j11 - ex * j21) / det
+  }
+  return { yaw, pitch }
+}
+
+/**
+ * Шаги сборки. Порядок - от того, что видно первым кадром, к тому, что нужно
+ * только телу: земля и пост, потом лес, потом всё мелкое и невидимое.
+ */
+export function* buildWorldSteps(aspect: number): Generator<string, World, void> {
   const group = new THREE.Group()
   group.name = 'world'
-
-  const mud = new THREE.MeshStandardMaterial({ color: MUD, roughness: 1 })
-  const concrete = new THREE.MeshStandardMaterial({ color: CONCRETE, roughness: 0.92 })
-
-  const w = CLEARING.maxX - CLEARING.minX + GROUND_MARGIN * 2
-  const d = CLEARING.maxZ - CLEARING.minZ + GROUND_MARGIN * 2
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mud)
-  ground.rotation.x = -Math.PI / 2
-  ground.position.set((CLEARING.minX + CLEARING.maxX) / 2, 0, (CLEARING.minZ + CLEARING.maxZ) / 2)
-  ground.name = 'ground'
-
   const solid = new THREE.Group()
   solid.name = 'solid'
-  solid.add(
-    box(BLOCK.x0, BLOCK.x1, 0, BLOCK.height, BLOCK.z0, BLOCK.z1, concrete),
-    box(HANGAR.x0, HANGAR.x1, 0, HANGAR.wall, HANGAR.z0, HANGAR.z1, concrete),
-    vault(concrete),
-    box(CANOPY.x0, CANOPY.x1, CANOPY.y, CANOPY.y + CANOPY.thick, CANOPY.z0, CANOPY.z1, concrete),
-    box(PLINTH.x0, PLINTH.x1, 0, PLINTH.top, PLINTH.z0, PLINTH.z1, concrete),
-  )
 
-  // Слабый свет неба: без него силуэт поста в тумане пропадает целиком.
-  const sky = new THREE.HemisphereLight(0x113537, 0x050b0a, 0.6)
+  group.add(buildGround())
+  yield 'земля'
 
-  group.add(ground, solid, lamp(), sky)
+  const post = buildPost()
+  group.add(post.group)
+  for (const o of post.solid) solid.add(o.clone())
+  const lamp = buildLamp()
+  group.add(lamp, lamp.target)
+  LAMP.power.value = 1
+  yield 'пост'
+
+  const plan = planForest()
+  yield 'план леса'
+
+  const forest = buildForest(plan)
+  group.add(forest.group)
+  yield 'лес'
+
+  group.add(buildCables())
+  const flashlight = buildFlashlight()
+  group.add(flashlight.group)
+  for (const m of buildBounds(plan)) solid.add(m)
+  yield 'кабели'
 
   const spawn = new THREE.Vector3(WAKE_POINT.x, heightAt(WAKE_POINT.x, WAKE_POINT.z), WAKE_POINT.z)
-
-  // Камера three смотрит в -Z; поворот на yaw вокруг Y даёт направление
-  // (-sin yaw, 0, -cos yaw). Отсюда угол на центр трубки.
-  const dx = (ENTRY_LAMP.x0 + ENTRY_LAMP.x1) / 2 - spawn.x
-  const dz = ENTRY_LAMP.z - spawn.z
-  const yaw = Math.atan2(-dx, -dz)
-  const pitch = Math.atan2(ENTRY_LAMP.y - (spawn.y + BODY.eye), Math.hypot(dx, dz))
-
-  return { group, solid, spawn, yaw, pitch }
+  const { yaw, pitch } = aimAtLamp(spawn, aspect)
+  return {
+    group,
+    solid,
+    spawn,
+    yaw,
+    pitch,
+    plan,
+    post,
+    forest,
+    flashlight,
+    lamp,
+    aim: (a) => aimAtLamp(spawn, a),
+  }
 }
