@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Vigil</title>
+    <!-- boot.js стоит первым модулем в head намеренно: модульные скрипты
+         исполняются в порядке документа, а Vite поднимает бандл мира в head.
+         Когда boot.js лежал в конце body, мир звал __FTE_BOOT__.ready() раньше,
+         чем сторож существовал, и через 30 с живой мир объявлялся не
+         загрузившимся. -->
+    <script type="module" src="/boot.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🌧️</text></svg>" />
+    <!-- Прелоада нет и не нужно: моделей и карт у мира нет, всё собирается
+         кодом, и в критическом пути стоит только бандл. -->
+    <style>
+      /* ======================================================================
+         ОБОЛОЧКА МИРА — одинаковая во всех мирах find-the-end.fun.
+         Полоса загрузки, экран входа (он же пауза), выход на витрину. Числа
+         в этом блоке общие для всех миров и правятся сразу во всех; своё у
+         мира — только палитра ниже и три строки текста в разметке.
+         Эталон и правила: docs/games.md, «Единая оболочка мира».
+         ====================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #050b0a; /* фон мира: тот же цвет, что у неба в кадре */
+        --ink: #cfe3dc; /* основной текст */
+        --dim: #6f8f86; /* тихий текст: подписи и тихие ссылки */
+        --accent: #6cb398; /* акцент мира — тот же, что на карточке витрины */
+        --edge: rgba(108, 179, 152, 0.45); /* та же краска в рамке кнопки */
+        --glow: rgba(108, 179, 152, 0.12); /* и в её подсветке под курсором */
+      }
+
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); }
+      body {
+        font-family: 'Segoe UI', system-ui, sans-serif; color: var(--ink);
+        /* Игра ведёт себя как приложение: текст здесь не для копирования.
+           Без этого зажатая мышь тянет по экрану полосу выделения, а долгое
+           касание вызывает лупу и меню «скопировать». */
+        -webkit-user-select: none; user-select: none;
+        -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+      }
+      canvas { display: block; }
+
+      /* Экран входа он же заставка он же пауза: ОДИН экран на всё.
+         Раньше их было два - заставка с полосой поверх и меню под ней, - и
+         переключение между ними читалось как щелчок. Хуже того, меню
+         открывалось только по первому кадру мира, то есть ждало сборки, а
+         нажатие до неё пропадало впустую.
+         Теперь экран входа показывается сразу, ещё до того как мир начал
+         собираться. Полоса живёт под кнопкой и тает, когда мир готов; нажать
+         можно в любой момент - нажатие подхватит boot.js и передаст миру, как
+         только тот встанет на ноги. */
+      #gate {
+        position: fixed; inset: 0; z-index: 10;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        /* Тонировка поверх готового мира. Пока мир не собран, её не видно вовсе:
+           сверху лежит сплошной туман (#fog). `backdrop-filter` отсюда убран
+           намеренно - он размывал ЖИВОЙ кадр мира на весь экран каждый кадр, и
+           за это платило меню: наведение и нажатие отвечали с запозданием. */
+        background: rgba(4, 8, 14, 0.55);
+        transition: opacity 0.5s ease;
+        /* Первое появление - мягкое: витрина гаснет полсекунды, и титул мира
+           проступает ей навстречу, а не выпрыгивает готовым. */
+        animation: gate-in 0.7s ease both;
+      }
+      @keyframes gate-in { from { opacity: 0; } to { opacity: 1; } }
+      #gate.hidden { opacity: 0; visibility: hidden; pointer-events: none; animation: none; }
+    /* Одноразовые анимации появления (`gate-in`, `gate-btn-in`) идут с `both`
+       и держат opacity: 1 и visibility: visible после конца - и перебивали бы
+       `.hidden` у гейта: кнопки «продолжить» и «начать заново» оставались в
+       кадре поверх мира (замечание с прода 04.09). У скрытого гейта анимаций
+       нет, кнопки спрятаны явно. */
+    body #gate.hidden .btn, body #gate.hidden .quiet,
+    body.unveiled #gate.hidden .btn, body.unveiled #gate.hidden .quiet { animation: none; visibility: hidden; opacity: 0; }
+
+      /* --- туман экрана входа ---
+         Пока мир собирается, за меню не должно быть видно ничего: ни того, как
+         мир встаёт по кускам, ни того, как он одевается. Раньше здесь стояло
+         стекло (`backdrop-filter`), то есть КАЖДЫЙ кадр мира ещё и размывался во
+         весь экран - самая дорогая из возможных подложек, и меню вязло именно на
+         ней.
+         Теперь подложка своя и мира не касается: сплошной слой цвета неба и
+         три размытых пятна на нём. Пятна нарисованы градиентом один раз и потом
+         только ездят - анимируется `transform`, то есть работа композитора, а не
+         перерисовка страницы. Главный поток на туман не тратит ничего.
+         Туман снимает НЕ готовность мира к управлению, а его полная
+         сборка: мир зовёт `__FTE_BOOT__.unveil()` последней волной отделки,
+         и только тогда на body появляется `unveiled`. Раньше это делал
+         `ready()`, то есть первый кадр, - и за меню было видно, как мир
+         достраивается, а меню на этой стройке подвисало.
+         Туман расходится за две секунды и открывает мир за меню, а меню
+         остаётся поверх с одной лишь тонировкой. Через те же две секунды
+         слой снимается из потока совсем (`#fog.gone`), чтобы анимации не
+         крутились впустую.
+         Это НЕ пробуждение (`awaken.js`): туман - это меню, пробуждение - мир. */
+      #fog {
+        position: absolute; inset: 0; z-index: -1; overflow: hidden;
+        background: var(--bg);
+        transition: opacity 2s ease;
+      }
+      #fog i {
+        position: absolute; display: block; border-radius: 50%;
+        background: radial-gradient(closest-side, rgba(62, 86, 130, 0.5), rgba(62, 86, 130, 0));
+        will-change: transform;
+      }
+      #fog i:nth-child(1) {
+        left: -30%; top: -35%; width: 110vmax; height: 110vmax;
+        animation: fog-a 46s ease-in-out infinite alternate;
+      }
+      #fog i:nth-child(2) {
+        right: -35%; top: 8%; width: 92vmax; height: 92vmax;
+        background: radial-gradient(closest-side, rgba(26, 42, 74, 0.6), rgba(26, 42, 74, 0));
+        animation: fog-b 62s ease-in-out infinite alternate;
+      }
+      #fog i:nth-child(3) {
+        left: 12%; bottom: -45%; width: 80vmax; height: 80vmax;
+        background: radial-gradient(closest-side, rgba(98, 122, 170, 0.28), rgba(98, 122, 170, 0));
+        animation: fog-c 54s ease-in-out infinite alternate;
+      }
+      @keyframes fog-a { from { transform: translate3d(-6%, -3%, 0) scale(1); } to { transform: translate3d(7%, 5%, 0) scale(1.12); } }
+      @keyframes fog-b { from { transform: translate3d(5%, 4%, 0) scale(1.08); } to { transform: translate3d(-6%, -5%, 0) scale(1); } }
+      @keyframes fog-c { from { transform: translate3d(-4%, 6%, 0) scale(1); } to { transform: translate3d(6%, -4%, 0) scale(1.15); } }
+      body.unveiled #fog { opacity: 0; }
+      #fog.gone { display: none; }
+      /* Телефон: одним пятном меньше и ход вдвое медленнее - туман там не должен
+         стоить дороже, чем на десктопе. */
+      @media (max-width: 560px) {
+        #fog i:nth-child(3) { display: none; }
+        #fog i { animation-duration: 90s; }
+      }
+
+      /* Кегль ведёт себя от ширины экрана осторожно: имя мира — одно длинное
+         слово с большим трекингом, и на 360 px оно упиралось в края. */
+      #gate h1 {
+        max-width: 100%; padding: 0 1rem;
+        font-size: clamp(1.5rem, 5.4vw, 4.6rem); font-weight: 200;
+        letter-spacing: 0.4em; text-indent: 0.4em; text-align: center;
+        text-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+      }
+      /* Строка настроения — та же, что на карточке этого мира на витрине. */
+      #gate .mood {
+        margin-top: 1.1rem; padding: 0 1.5rem;
+        font-size: 0.9rem; letter-spacing: 0.06em; color: var(--dim); text-align: center;
+      }
+      .btn {
+        margin-top: 3rem; padding: 0.9rem 3.2rem;
+        font: inherit; font-size: 0.95rem;
+        letter-spacing: 0.3em; text-indent: 0.3em; text-transform: uppercase;
+        color: var(--ink); background: transparent;
+        border: 1px solid var(--edge); border-radius: 2px;
+        cursor: pointer;
+        /* Именно перечислением, а не `all`: `all` тянет за собой и те свойства,
+           что двигают раскладку, и наведение на кнопку стоило бы перерисовки. */
+        transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+      }
+      .btn:hover { background: var(--glow); border-color: var(--accent); }
+      .btn:focus-visible, .quiet:focus-visible, #exit:focus-visible, .tbtn:focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 4px;
+      }
+
+      /* --- кнопок нет, пока мир не собран ---
+         Пока идёт загрузка, на экране только титул, строка настроения и полоса.
+         Ни одной кнопки: нажимать нечего, потому что мир ещё не готов принять
+         нажатие, а живая кнопка над занятым главным потоком отзывается с
+         полусекундным запозданием - именно это и читалось как «кнопка не
+         работает». Прежняя механика (кнопка принимала нажатие в ожидание «мир
+         собирается» и держала его до прихода мира) убрана целиком: нет кнопки -
+         нет и раннего нажатия.
+         Прячем ИМЕННО видимостью, а не прозрачностью: невидимая, но живая кнопка
+         ловит и Tab, и клик мимо, и это хуже нарисованной.
+         Завязано на состояние ЗАГРУЗКИ (`body.booting`), а не на сам экран: пауза
+         по Esc - тот же #gate, но мир на ней давно собран, и кнопки там должны
+         быть сразу, без всякого проявления.
+         Исключение одно - `boot-failed`: если мир не собрался, входить некуда, но
+         «повторить» нужно немедленно. */
+      body.booting:not(.boot-failed) #gate .btn,
+      body.booting:not(.boot-failed) #gate .quiet {
+        opacity: 0; visibility: hidden;
+      }
+      body.booting:not(.boot-failed) #exit { visibility: hidden; }
+      /* Проявление кнопок идёт ПОСЛЕ того, как туман тронулся с места, а не вместе
+         с ним: последняя волна отделки - самый тяжёлый кадр за всю загрузку, и
+         начинать на нём движение значит показать его рывком. Задержка в 0.45 с
+         пропускает его вперёд.
+         Именно АНИМАЦИЯ, а не переход, и это не вкусовщина. Переход по `visibility`
+         с задержкой отработал бы ещё раз на каждой паузе: экран паузы - тот же
+         #gate, он показывается снятием `hidden`, и кнопки на нём выцветали бы те
+         же полсекунды. Анимация же играет один раз, на самом `unveiled`, и потом
+         держит конечный кадр (`both`) - пауза открывается мгновенно.
+         `visibility` внутри кадров нужен, чтобы кнопка не ловила клик и Tab в те
+         0.45 с, пока она ещё нарисована прозрачной. */
+      body.unveiled #gate .btn,
+      body.unveiled #gate .quiet {
+        animation: gate-btn-in 0.8s ease 0.45s both;
+      }
+      @keyframes gate-btn-in {
+        from { opacity: 0; transform: translateY(7px); visibility: hidden; }
+        1% { visibility: visible; }
+        to { opacity: 1; transform: none; visibility: visible; }
+      }
+
+      /* --- полоса под титулом ---
+         Пока мир собирается, она единственное, что движется на экране, и потому
+         ведёт всю атмосферу входа. Отсюда её вид: тонкая линия шириной примерно с
+         титул, заливка от прозрачного к цвету мира и мягкий огонёк на бегущем
+         конце - один тихий акцент, и больше ничего.
+         Ширину ведёт boot.js покадрово, а CSS-перехода на width здесь НЕТ
+         намеренно: два хода по одному свойству и дают те самые рывки, ради которых
+         всё и переделывалось.
+         Под линией - тихая подпись, что мир собирает прямо сейчас. Высота у неё
+         зарезервирована, поэтому смена подписи не двигает раскладку. */
+      #boot {
+        display: flex; flex-direction: column; align-items: center; gap: 0.9rem;
+        margin-top: 2.2rem;
+        /* Полоса тает МЕДЛЕННЕЕ, чем доходит до края, и с задержкой: иначе конец
+           её хода приходится уже на прозрачное, и до края она на глазах не
+           доходит вовсе. */
+        transition: opacity 1.1s ease 0.35s;
+      }
+      body.ready #boot { opacity: 0; }
+
+      #loadBar {
+        position: relative; overflow: hidden;
+        width: min(560px, 74vw); height: 2px;
+        background: rgba(140, 165, 205, 0.14);
+      }
+      /* Пока boot.js не сделал первый кадр хода, полоса «дышит» на CSS - без
+         единой строчки JS, на случай если разбор бандла затянулся. */
+      #loadFill {
+        position: absolute; top: 0; bottom: 0; left: -34%; width: 34%;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        animation: drift 1.7s ease-in-out infinite;
+      }
+      @keyframes drift { to { left: 100%; } }
+      #loadBar.known #loadFill {
+        animation: none; left: 0; width: 0;
+        background: linear-gradient(90deg, transparent 0%, var(--accent) 76%, var(--ink) 100%);
+      }
+      /* Огонёк на бегущем конце. Он же и есть весь «свет» экрана загрузки. */
+      #loadBar.known #loadFill::after {
+        content: ''; position: absolute; right: -1px; top: -2px;
+        width: 3px; height: 6px; border-radius: 2px;
+        background: var(--ink);
+        box-shadow: 0 0 7px 1px var(--accent), 0 0 20px 4px var(--glow);
+      }
+      #loadNote {
+        min-height: 1.05em;
+        font-size: 0.7rem; letter-spacing: 0.26em; text-indent: 0.26em;
+        text-transform: uppercase; color: var(--dim); text-align: center;
+        opacity: 0.9; text-shadow: 0 0 14px rgba(0, 0, 0, 0.7);
+        transition: opacity 0.26s ease;
+      }
+      #loadNote.fading { opacity: 0; }
+
+      /* Мир не собрался: полоса врёт о продолжении, и её не остаётся. Остаётся
+         строка и кнопка «повторить» (обе ставит boot.js). */
+      #bootMsg {
+        max-width: 22rem; text-align: center; line-height: 1.7;
+        font-size: 0.8rem; letter-spacing: 0.08em; color: var(--dim);
+      }
+      body.boot-failed #loadBar { display: none; }
+      body.boot-failed #loadNote { display: none; }
+      /* Пока мир не собрался, входить некуда: кнопка входа уступает место
+         кнопке «повторить». */
+      body.boot-failed #enter { display: none; }
+
+      /* Тихие ссылки под кнопкой: выход из мира и всё, что мир добавит от себя. */
+      .quiet {
+        margin-top: 1.8rem;
+        font: inherit; font-size: 0.68rem;
+        letter-spacing: 0.28em; text-indent: 0.28em; text-transform: uppercase;
+        color: var(--dim); opacity: 1; text-decoration: none;
+        background: transparent; border: none; cursor: pointer;
+        transition: opacity 0.25s ease, color 0.25s ease;
+      }
+      .quiet:hover { opacity: 1; color: var(--ink); }
+
+      /* Выход на витрину. В самой игре его в кадре нет: стрелка появляется
+         только когда курсор свободен — на экране входа и на паузе. */
+      #exit {
+        position: fixed; z-index: 11;
+        top: max(14px, env(safe-area-inset-top)); left: max(14px, env(safe-area-inset-left));
+        width: 44px; height: 44px;
+        display: flex; align-items: center; justify-content: center;
+        opacity: 0; pointer-events: none; transition: opacity 0.35s ease;
+      }
+      body.paused #exit { opacity: 0.45; pointer-events: auto; }
+      #exit:hover { opacity: 1; }
+      /* На таче pointer lock не используется, а значит нет и паузы, на которой
+         стрелка появляется сама: там она висит всегда и тусклее - иначе из мира
+         не выйти ничем, кроме кнопки «назад» браузера.
+         Контур обязателен, и слабого не хватает. На паузе стрелка лежит поверх
+         затемнения и читается сама; здесь она лежит прямо на кадре мира, и
+         светлый штрих по светлому участку кадра пропадает целиком.
+         Тень плотная и в два слоя: ближний даёт кромку, дальний - отрыв от
+         фона. То же лечение, что у тач-кнопок, только сильнее. */
+      body.touch-mode #exit { opacity: 0.8; pointer-events: auto; }
+      body.touch-mode #exit svg {
+        stroke: #f2f7ff;
+        filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.95)) drop-shadow(0 0 8px rgba(0, 0, 0, 0.6));
+      }
+      #exit svg {
+        width: 20px; height: 20px; fill: none; stroke: var(--ink);
+        stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
+      }
+
+      /* ================= дальше — своё этого мира ========================= */
+
+      /* Контекстная подсказка: одно слово-глагол внизу экрана - что сделает
+         рука с тем, на что смотришь. Единственный текст в кадре. */
+      #prompt {
+        position: fixed; left: 50%; bottom: 12%; z-index: 5;
+        transform: translateX(-50%);
+        color: var(--ink); font-size: 13px; letter-spacing: 0.04em;
+        text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+        opacity: 0; transition: opacity 0.25s ease;
+        pointer-events: none; white-space: nowrap;
+      }
+      #prompt.show { opacity: 0.8; }
+      /* На паузе цикл мира стоит и до подсказки не доходит: без этой строки
+         подсказка висела бы под кнопкой «продолжить». */
+      body.paused #prompt { opacity: 0; }
+
+      /* Тач-управление. Узлы создаются из touch.ts и только на тач-устройствах:
+         на десктопе ни кнопок, ни слушателей нет вовсе. Джойстиков не рисуем -
+         палец слева ведёт тело, справа поворачивает взгляд. Кнопка одна -
+         «рука», и появляется она, только когда ею есть что сделать. Голая:
+         штрих без подложки, чтобы в кадре остался мир, а не интерфейс. */
+      #touchUI { position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none; }
+      #touchUI.on { display: block; }
+      .tbtn {
+        position: fixed; width: 68px; height: 68px; padding: 0;
+        pointer-events: auto; background: transparent; border: none;
+        display: flex; align-items: center; justify-content: center;
+        opacity: 0.5; transition: opacity 0.2s ease;
+        -webkit-tap-highlight-color: transparent; touch-action: none;
+      }
+      .tbtn:active { opacity: 1; }
+      .tbtn.hide { display: none; }
+      .tbtn svg {
+        width: 34px; height: 34px; fill: none; stroke: #e6f2ee;
+        stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round;
+        filter: drop-shadow(0 0 7px rgba(0, 0, 0, 0.75));
+      }
+      #tbAct { right: max(20px, env(safe-area-inset-right)); bottom: 32px; }
+      body.touch-mode, body.touch-mode canvas {
+        touch-action: none; user-select: none; -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #loadFill { animation: none; left: 0; }
+        #loadNote { transition: none; }
+        #gate .btn, #gate .quiet { animation: none; }
+        #gate, #boot, #prompt, .tbtn, #exit { transition: none; }
+        #gate { animation: none; }
+        #fog { transition: none; }
+        #fog i { animation: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <a id="exit" href="https://find-the-end.fun/" aria-label="Выйти на витрину">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg>
+    </a>
+
+    <!-- Экран входа виден СРАЗУ, без ожидания мира: ни class="hidden", ни inert.
+         Мир собирается за ним и проступает сквозь него по мере готовности. -->
+    <div id="gate">
+      <!-- Туман: подложка меню, пока мир не собран. Три пятна, ездят transform'ом. -->
+      <div id="fog" aria-hidden="true"><i></i><i></i><i></i></div>
+      <h1>VIGIL</h1>
+      <p class="mood">Дождь идёт одиннадцатый год.</p>
+      <button id="enter" class="btn" type="button" data-resume="продолжить">очнуться</button>
+      <div id="boot" role="status" aria-live="polite">
+        <div id="loadBar" role="progressbar" aria-label="Мир собирается"><div id="loadFill"></div></div>
+        <p id="loadNote" aria-hidden="true"></p>
+        <p id="bootMsg" hidden></p>
+      </div>
+      <a class="quiet" href="https://find-the-end.fun/">выйти из мира</a>
+    </div>
+
+    <div id="prompt"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
