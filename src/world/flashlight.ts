@@ -8,7 +8,11 @@
  * шумом морося. Капли в конусе светлее - это считает шейдер дождя по тем же
  * числам (`TORCH` в rain.ts).
  *
- * Взять фонарь в руку - этап рук; здесь он только лежит и светит.
+ * Взять фонарь в руку по-настоящему - этап рук (действие «взять», руки,
+ * `HeldTool`). До него фонарь поднимается сам, когда игрок подходит к нему
+ * вплотную, и дальше светит из правой руки: луч догоняет взгляд с весом руки
+ * (`1 - exp(-10 dt)`, look.md, «Фонарь») и качается в такт шагу. Модели в руке
+ * пока нет - только свет и видимый луч.
  */
 
 import * as THREE from 'three'
@@ -34,7 +38,18 @@ export type Flashlight = {
   group: THREE.Group
   light: THREE.SpotLight
   setPower(k: number): void
+  /** В руке ли. */
+  readonly carried: boolean
+  /** Поднять: фонарь исчезает из грязи и светит из руки. */
+  pick(): void
+  /** Кадр в руке: луч идёт за взглядом с весом руки. `stride` - фаза шага, рад. */
+  follow(dt: number, camera: THREE.Camera, stride: number): void
 }
+
+/** Где рука держит фонарь относительно глаза: вправо, вниз, вперёд, м. */
+const HAND = { right: 0.24, down: 0.28, forward: 0.22 } as const
+/** Как быстро луч догоняет взгляд, 1/с (look.md, «Фонарь»). */
+const AIM_RATE = 10
 
 export function buildFlashlight(): Flashlight {
   const group = new THREE.Group()
@@ -70,7 +85,14 @@ export function buildFlashlight(): Flashlight {
   light.name = 'flashlight-beam'
   light.position.copy(tip)
   light.target.position.copy(tip).addScaledVector(axis, 5)
+  // Тень у фонаря включает менеджер света, когда игрок с ним внутри: снаружи
+  // тень одна - у лампы входа.
   light.castShadow = false
+  light.shadow.mapSize.set(512, 512)
+  light.shadow.camera.near = 0.08
+  light.shadow.camera.far = BEAM.distance
+  light.shadow.bias = -0.0006
+  light.shadow.normalBias = 0.02
   group.add(light, light.target)
 
   // Видимый конус: открытый конус от линзы, яркость падает к концу и к краю.
@@ -137,13 +159,58 @@ export function buildFlashlight(): Flashlight {
   TORCH.cos.value = Math.cos(BEAM.angle)
   TORCH.power.value = 1
 
+  let carried = false
+  let power = 1
+  const aim = new THREE.Vector3()
+  const eye = new THREE.Vector3()
+  const fwd = new THREE.Vector3()
+  const right = new THREE.Vector3()
+  const up = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const Y = new THREE.Vector3(0, 1, 0)
+
   return {
     group,
     light,
     setPower(k) {
+      power = k
       light.intensity = BEAM.intensity * k
-      coneMat.uniforms.uGain.value = BEAM.coneGain * k
+      coneMat.uniforms.uGain.value = BEAM.coneGain * k * (carried ? 0.55 : 1)
       TORCH.power.value = k
+    },
+    get carried() {
+      return carried
+    },
+    pick() {
+      if (carried) return
+      carried = true
+      body.visible = false
+      coneMat.uniforms.uGain.value = BEAM.coneGain * power * 0.55
+    },
+    follow(dt, camera, stride) {
+      if (!carried) return
+      camera.getWorldPosition(eye)
+      camera.getWorldDirection(fwd)
+      right.crossVectors(fwd, Y).normalize()
+      up.crossVectors(right, fwd).normalize()
+      // Вес руки: направление луча догоняет взгляд, а не прилипает к нему.
+      if (aim.lengthSq() === 0) aim.copy(fwd)
+      aim.lerp(fwd, 1 - Math.exp(-AIM_RATE * dt)).normalize()
+      // Качание в такт шагу: рука ходит вверх-вниз и чуть вбок.
+      const bob = Math.sin(stride) * 0.012
+      const sway = Math.cos(stride * 0.5) * 0.008
+      const tip = light.position
+        .copy(eye)
+        .addScaledVector(right, HAND.right + sway)
+        .addScaledVector(up, -HAND.down + bob)
+        .addScaledVector(fwd, HAND.forward)
+      light.target.position.copy(tip).addScaledVector(aim, 5)
+      light.target.updateMatrixWorld()
+      beam.position.copy(tip)
+      q.setFromUnitVectors(Y, aim)
+      beam.quaternion.copy(q)
+      TORCH.pos.value.copy(tip)
+      TORCH.dir.value.copy(aim)
     },
   }
 }

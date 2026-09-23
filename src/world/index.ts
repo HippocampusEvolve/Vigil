@@ -24,6 +24,8 @@ import { buildBounds } from './bounds'
 import { buildFlashlight, type Flashlight } from './flashlight'
 import { ENTRY_LAMP, FOCUS_FOV, LAMP_IN_FRAME, WAKE_POINT } from './layout'
 import { LAMP } from './shared'
+import { buildDoors, type Doors } from './doors'
+import { createLights, type Lights } from './lights'
 
 export type World = {
   /** Всё, что рисуется. */
@@ -40,6 +42,10 @@ export type World = {
   forest: Forest
   flashlight: Flashlight
   lamp: THREE.SpotLight
+  /** Створки дверей: входная видна с первого кадра. */
+  doors: Doors
+  /** Пул живого света: заведён с первого кадра, чтобы число источников не менялось. */
+  lights: Lights
   /** Перекадрировать взгляд под новое соотношение сторон экрана. */
   aim(aspect: number): { yaw: number; pitch: number }
 }
@@ -194,6 +200,9 @@ export function* buildWorldSteps(aspect: number): Generator<string, World, void>
   const flashlight = buildFlashlight()
   group.add(flashlight.group)
   for (const m of buildBounds(plan)) solid.add(m)
+  const doors = buildDoors(post.materials.metal, post.materials.glass)
+  group.add(doors.group)
+  const lights = createLights({ entry: lamp, flash: flashlight.light, entryIntensity: LAMP_LIGHT.intensity })
   yield 'кабели'
 
   const spawn = new THREE.Vector3(WAKE_POINT.x, heightAt(WAKE_POINT.x, WAKE_POINT.z), WAKE_POINT.z)
@@ -209,6 +218,8 @@ export function* buildWorldSteps(aspect: number): Generator<string, World, void>
     forest,
     flashlight,
     lamp,
+    doors,
+    lights,
     aim: (a) => aimAtLamp(spawn, a),
   }
 }

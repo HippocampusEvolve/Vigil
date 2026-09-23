@@ -182,3 +182,13 @@ export const STREAM_LEVEL = -STREAM.depth + 0.14
 export function inClearing(x: number, z: number): boolean {
   return x >= CLEARING.minX && x <= CLEARING.maxX && z >= CLEARING.minZ && z <= CLEARING.maxZ
 }
+
+/**
+ * Земля под ногами для тела и проверок прохода: снаружи - рельеф, внутри
+ * рамки поста её нет вовсе. Пол нутра - настил построек, а под люком -
+ * лестница вниз; формула земли внутри поста вышла бы полом над открытым люком.
+ */
+export function groundUnder(x: number, z: number): number {
+  if (x > HANGAR.x0 && x < BLOCK.x1 && z > HANGAR.z0 && z < Math.max(HANGAR.z1, BLOCK.z1)) return -Infinity
+  return heightAt(x, z)
+}

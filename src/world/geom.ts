@@ -64,13 +64,24 @@ export function wall(
   v1: number,
   holes: Hole[] = [],
 ): THREE.BufferGeometry {
+  // Проём от самого низа стены (дверь от пола) - не дыра, а вырез в контуре.
+  // Дыра оставила бы у низа проёма грань-порог, смотрящую вверх, ровно в
+  // плоскости пола - полосы в кадре и «тело в теле» в проверке.
+  const base = holes.filter((h) => h.v0 <= v0 + 1e-6).sort((a, b) => a.u0 - b.u0)
   const shape = new THREE.Shape()
   shape.moveTo(u0, v0)
+  for (const h of base) {
+    shape.lineTo(h.u0, v0)
+    shape.lineTo(h.u0, h.v1)
+    shape.lineTo(h.u1, h.v1)
+    shape.lineTo(h.u1, v0)
+  }
   shape.lineTo(u1, v0)
   shape.lineTo(u1, v1)
   shape.lineTo(u0, v1)
   shape.lineTo(u0, v0)
   for (const h of holes) {
+    if (base.includes(h)) continue
     const p = new THREE.Path()
     p.moveTo(h.u0, h.v0)
     p.lineTo(h.u0, h.v1)

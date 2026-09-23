@@ -17,12 +17,16 @@
 import * as THREE from 'three'
 import { box, merge, paint, pipe, wall, type Hole } from './geom'
 import { concreteMaterial } from './concrete'
-import { LAMP } from './shared'
+import { FLASH, LAMP } from './shared'
+import { indoor } from './indoor'
 import { heightAt } from './terrain'
 import {
   BLOCK,
   CANOPY,
   DOOR,
+  DOORWAY,
+  FLOOR,
+  OPENINGS,
   ENTRY_LAMP,
   EXHAUST,
   GEOPHONE,
@@ -59,6 +63,8 @@ export type Post = {
   bodies: Array<{ name: string; geometry: THREE.BufferGeometry }>
   /** Твёрдое для тела: простые коробки деталей, до которых тело достаёт. */
   colliders: THREE.Mesh
+  /** Материалы поста: нутро и створки берут их же - программы уже собраны. */
+  materials: { concrete: THREE.Material; metal: THREE.Material; glass: THREE.Material }
 }
 
 /**
@@ -81,7 +87,7 @@ export const GLOW = { core: 8, halo: 1.3, wide: 1.2, pad: 1.3 } as const
 const VAULT_SEG = 28
 
 /** Краски, линейные. Облезлая серо-зелёная дверь, оцинковка, ржавчина. */
-const PAINT = {
+export const PAINT = {
   door: 0x6f8a7a,
   frame: 0x3a403c,
   steel: 0x6c716e,
@@ -126,6 +132,34 @@ function arc(a: number, b: number, from: number, to: number, seg = VAULT_SEG): A
     out.push([VAULT_Z + a * Math.cos(t), HANGAR.wall + b * Math.sin(t)])
   }
   return out
+}
+
+/**
+ * Внутренняя кромка свода от фасада к задней стене: (z, y). Перегородки ангара
+ * идут под свод ровно по этим точкам - верх перегородки ложится на свод гранью,
+ * а не щелью и не заходом внутрь.
+ */
+export function vaultInner(): Array<[number, number]> {
+  return arc(INNER_A, INNER_B, 0, Math.PI)
+}
+
+/** Профиль в плоскости (Z, Y) с проёмами, выдавленный вдоль X: перегородка под свод. */
+export function extrudeXHoles(points: Array<[number, number]>, holes: Array<{ z0: number; z1: number; y0: number; y1: number }>, x0: number, x1: number): THREE.BufferGeometry {
+  const shape = new THREE.Shape()
+  points.forEach(([z, y], i) => (i ? shape.lineTo(-z, y) : shape.moveTo(-z, y)))
+  for (const h of holes) {
+    const p = new THREE.Path()
+    p.moveTo(-h.z1, h.y0)
+    p.lineTo(-h.z1, h.y1)
+    p.lineTo(-h.z0, h.y1)
+    p.lineTo(-h.z0, h.y0)
+    p.lineTo(-h.z1, h.y0)
+    shape.holes.push(p)
+  }
+  const g = new THREE.ExtrudeGeometry(shape, { depth: x1 - x0, bevelEnabled: false, curveSegments: 1 })
+  g.rotateY(Math.PI / 2)
+  g.translate(x0, 0, 0)
+  return paint(g, 0xffffff)
 }
 
 function v(x: number, y: number, z: number): THREE.Vector3 {
@@ -215,6 +249,38 @@ function lampGlow(): THREE.Mesh {
   mesh.frustumCulled = false
   mesh.renderOrder = 2
   return mesh
+}
+
+/**
+ * Материалы поста: бетон, сталь, стекло. Уличные - первому кадру; с нутром -
+ * второй волне (`inside`): те же поверхности снаружи, но знают, в чей воздух
+ * смотрит грань, и светятся светом комнат. Нутро и створки берут их же.
+ */
+export function postMaterials(inside: boolean): { concrete: THREE.Material; metal: THREE.Material; glass: THREE.Material } {
+  const wrap = <M extends THREE.Material>(m: M): M => (inside ? indoor(m) : m)
+  const metal = wrap(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.35 }))
+  // Стекло грязное и мокрое: тёмное, почти зеркальное, чуть мутное.
+  const glass = new THREE.MeshStandardMaterial({ color: 0x1a2622, roughness: 0.18, metalness: 0.0, transparent: true, opacity: 0.78 })
+  // Молния за окном: стекло в щелях ставен и в окошке двери вспыхивает.
+  glass.onBeforeCompile = (shader) => {
+    shader.uniforms.uFlash = FLASH
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+         uniform float uFlash;`,
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+         totalEmissiveRadiance += vec3(0.35, 0.5, 0.52) * uFlash * 1.4;`,
+      )
+  }
+  // Стекло свет нутра не берёт ни внутри, ни снаружи: оно тёмное и почти
+  // зеркальное, свет комнат на нём не читается, а программа стекла с нутром на
+  // программном GL собирается 0.6 с одной задачей (замер 23.09.2026) - против
+  // 20-30 мс у бетона и стали с тем же кодом. Одна программа на оба случая.
+  return { concrete: concreteMaterial(inside), metal, glass }
 }
 
 /** Список кусков одного материала, у каждого куска - имя детали. */
@@ -312,10 +378,9 @@ export function* buildPostSteps(): Generator<void, Post, void> {
       paint(box(h.u0 + FRAME, h.u1 - FRAME, h.v1 - FRAME, h.v1, fz0, fz1), PAINT.frame),
       paint(box(cx - 0.015, cx + 0.015, h.v0 + FRAME, h.v1 - FRAME, fz0, fz1 - 0.01), PAINT.frame),
     )
-    // Стекло за переплётом, а не вровень с ним: ближе сантиметра - полосы.
-    const pane = new THREE.PlaneGeometry(h.u1 - h.u0 - 2 * FRAME, h.v1 - h.v0 - 2 * FRAME)
-    pane.translate(cx, (h.v0 + h.v1) / 2, GLASS_Z - 0.015)
-    glass.push(paint(pane, 0xffffff))
+    // Стекло за переплётом, а не вровень с ним: ближе сантиметра - полосы. У
+    // стекла есть толщина: плоскость без неё проверка честно зовёт вырожденной.
+    glass.push(paint(box(h.u0 + FRAME, h.u1 - FRAME, h.v0 + FRAME, h.v1 - FRAME, GLASS_Z - 0.019, GLASS_Z - 0.015), 0xffffff))
     const boards = 6
     const gap = 0.012
     const bw = (h.u1 - h.u0 - (boards - 1) * gap) / boards
@@ -336,7 +401,10 @@ export function* buildPostSteps(): Generator<void, Post, void> {
   note('блок: фасад', BLOCK.x0, BLOCK.x1, 0, top, BLOCK.z1 - w, BLOCK.z1)
   concrete.push(paint(box(BLOCK.x0, BLOCK.x1, 0, top, BLOCK.z0, BLOCK.z0 + w), 0xffffff))
   note('блок: задняя стена', BLOCK.x0, BLOCK.x1, 0, top, BLOCK.z0, BLOCK.z0 + w)
-  concrete.push(paint(box(BLOCK.x0, BLOCK.x0 + w, 0, top, BLOCK.z0 + w, BLOCK.z1 - w), 0xffffff))
+  // Западная стена блока - она же восточная стена кают-компании: в ней проём
+  // из коридора. Стена в плоскости x = w лицом на +X; `u` идёт по -Z.
+  const be: Hole = { u0: -OPENINGS.BE.z1, u1: -OPENINGS.BE.z0, v0: FLOOR.y, v1: FLOOR.y + DOORWAY.h }
+  concrete.push(paint(wall('x', BLOCK.x0 + w, w, -(BLOCK.z1 - w), -(BLOCK.z0 + w), 0, top, [be]), 0xffffff))
   note('блок: западная стена', BLOCK.x0, BLOCK.x0 + w, 0, top, BLOCK.z0 + w, BLOCK.z1 - w)
   concrete.push(paint(box(BLOCK.x1 - w, BLOCK.x1, 0, top, BLOCK.z0 + w, BLOCK.z1 - w), 0xffffff))
   note('блок: восточная стена', BLOCK.x1 - w, BLOCK.x1, 0, top, BLOCK.z0 + w, BLOCK.z1 - w)
@@ -359,18 +427,8 @@ export function* buildPostSteps(): Generator<void, Post, void> {
     paint(box(DOOR.x1 - F, DOOR.x1, DOOR.y0, DOOR.y1, dz0, dz1), PAINT.frame),
     paint(box(DOOR.x0 + F, DOOR.x1 - F, DOOR.y1 - F, DOOR.y1, dz0, dz1), PAINT.frame),
   )
-  const leafFace = dz1 - 0.01
-  const win = DOOR.window
-  const winX = (DOOR.x0 + DOOR.x1) / 2
-  const leaf = wall('z', leafFace, 0.05, DOOR.x0 + F, DOOR.x1 - F, DOOR.y0, DOOR.y1 - F, [
-    { u0: winX - win.w / 2, u1: winX + win.w / 2, v0: win.y0, v1: win.y1 },
-  ])
-  metal.push(paint(leaf, PAINT.door))
-  const doorPane = new THREE.PlaneGeometry(win.w, win.y1 - win.y0)
-  doorPane.translate(winX, (win.y0 + win.y1) / 2, leafFace - 0.025)
-  glass.push(paint(doorPane, 0xffffff))
-  metal.push(paint(box(DOOR.x1 - F - 0.14, DOOR.x1 - F - 0.1, 1.0, 1.1, leafFace, leafFace + 0.06), PAINT.steel))
-  note('дверь', DOOR.x0, DOOR.x1, DOOR.y0, DOOR.y1, dz0, dz1)
+  // Створка - подвижная, живёт в doors.ts; здесь только коробка.
+  note('дверь: коробка', DOOR.x0, DOOR.x1, DOOR.y0, DOOR.y1, dz0, dz1)
 
   // --- Лампа входа --------------------------------------------------------------
   // Жёлоб на стене, трубка перед ним, решётка скобами.
@@ -535,25 +593,20 @@ export function* buildPostSteps(): Generator<void, Post, void> {
   const group = new THREE.Group()
   group.name = 'post'
 
-  const concreteMesh = new THREE.Mesh(merge(concrete), concreteMaterial())
+  const mats = postMaterials(false)
+  const concreteMesh = new THREE.Mesh(merge(concrete), mats.concrete)
   concreteMesh.name = 'post-concrete'
   concreteMesh.castShadow = true
   concreteMesh.receiveShadow = true
 
-  const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.35 })
+  const metalMat = mats.metal
   const metalMesh = new THREE.Mesh(merge(metal), metalMat)
   metalMesh.name = 'post-metal'
   metalMesh.castShadow = true
   metalMesh.receiveShadow = true
 
   // Стекло грязное и мокрое: тёмное, почти зеркальное, чуть мутное.
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0x1a2622,
-    roughness: 0.18,
-    metalness: 0.0,
-    transparent: true,
-    opacity: 0.78,
-  })
+  const glassMat = mats.glass
   const glassMesh = new THREE.Mesh(merge(glass), glassMat)
   glassMesh.name = 'post-glass'
   glassMesh.receiveShadow = true
@@ -576,10 +629,28 @@ export function* buildPostSteps(): Generator<void, Post, void> {
 
   // Коллайдеры - рамки деталей, а не их треугольники: тело упирается в стену,
   // а не в болт на решётке, и дерево коллизий строится в десятки раз быстрее.
-  const boxes = parts.filter((p) => p.y0 < REACH).map((p) => box(p.x0, p.x1, p.y0, p.y1, p.z0, p.z1))
+  // Стена со сквозным проёмом рамкой не описывается - рамка заперла бы проём.
+  // Такие стены режутся на куски вокруг проёма; всё остальное - рамками.
+  const holed: Record<string, Array<[number, number, number, number, number, number]>> = {
+    'блок: фасад': [
+      [BLOCK.x0, DOOR.x0, 0, top, BLOCK.z1 - w, BLOCK.z1],
+      [DOOR.x1, BLOCK.x1, 0, top, BLOCK.z1 - w, BLOCK.z1],
+      // Порог ниже двери: отмостка и пол по обе стороны, шагом его берут.
+      [DOOR.x0, DOOR.x1, 0, DOOR.y0, BLOCK.z1 - w, BLOCK.z1],
+    ],
+    'блок: западная стена': [
+      [BLOCK.x0, BLOCK.x0 + w, 0, top, BLOCK.z0 + w, OPENINGS.BE.z0],
+      [BLOCK.x0, BLOCK.x0 + w, 0, top, OPENINGS.BE.z1, BLOCK.z1 - w],
+    ],
+    // Коробку двери держат куски фасада: сама она внутри проёма и ходу не мешает.
+    'дверь: коробка': [],
+  }
+  const boxes = parts
+    .filter((p) => p.y0 < REACH)
+    .flatMap((p) => (holed[p.name] ?? [[p.x0, p.x1, p.y0, p.y1, p.z0, p.z1]]).map((b) => box(...b)))
   const colliders = new THREE.Mesh(merge(boxes), new THREE.MeshBasicMaterial({ visible: false }))
   colliders.name = 'post-colliders'
   colliders.visible = false
 
-  return { group, solid: [concreteMesh, metalMesh], parts, tube, glow, bodies, colliders }
+  return { group, solid: [concreteMesh, metalMesh], parts, tube, glow, bodies, colliders, materials: mats }
 }

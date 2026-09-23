@@ -13,7 +13,7 @@
  */
 
 import * as THREE from 'three'
-import { CANOPY, CLEARING } from './layout'
+import { BLOCK, CANOPY, CLEARING, HANGAR } from './layout'
 import { groundSample, trailAt } from './terrain'
 import { RAIN_TIME } from './shared'
 
@@ -142,9 +142,16 @@ export function* buildGroundSteps(): Generator<void, THREE.Mesh, void> {
     if (iz % ROWS_PER_STEP === ROWS_PER_STEP - 1) yield
   }
 
+  // Под постом земли нет: там пол нутра на той же высоте и нижний ярус под
+  // ним. Сетка поляны идёт с шагом 0.4 от -34 по X и от -18 по Z, и её линии
+  // ложатся ровно на рамку поста (X -24 и 6, Z -8 и 0): ячейка либо целиком
+  // под постом и выпадает, либо целиком снаружи - щелей у стен нет.
+  const under = (x: number, z: number): boolean =>
+    x > HANGAR.x0 && x < BLOCK.x1 && z > HANGAR.z0 && z < Math.max(HANGAR.z1, BLOCK.z1)
   const index: number[] = []
   for (let iz = 0; iz < nz - 1; iz++) {
     for (let ix = 0; ix < nx - 1; ix++) {
+      if (under((xs[ix] + xs[ix + 1]) / 2, (zs[iz] + zs[iz + 1]) / 2)) continue
       const a = iz * nx + ix
       const b = a + 1
       const d = a + nx

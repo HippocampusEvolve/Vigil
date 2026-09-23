@@ -49,8 +49,12 @@ import { BODY, LOOK } from './player'
 import { layer } from './layer'
 import { buildWorldSteps, type World } from './world'
 import { buildCollision, type Collision } from './world/collision'
-import { heightAt, waterDepth } from './world/terrain'
-import { EYE_LOW, FOCUS_FOV } from './world/layout'
+import { groundUnder, heightAt, waterDepth } from './world/terrain'
+import { EYE_LOW, FLASHLIGHT_REST, FOCUS_FOV, HATCH, FLOOR, DOOR } from './world/layout'
+import { installIndoorChunks } from './world/indoor'
+import { buildInsideSteps, type Inside } from './world/inside'
+import { postMaterials } from './world/post'
+import { zoneAt } from './world/zones'
 import { createWeather, type Weather } from './weather'
 import { SKY_RADIUS } from './weather/sky'
 
@@ -136,6 +140,8 @@ Object.assign(window, { vigil: debug })
 const FALL_RESET_Y = -20
 
 async function boot(): Promise<void> {
+  // Свет нутра правит общие куски шейдеров three: до первой сборки программ.
+  installIndoorChunks()
   // Сперва мир: его сборка - чистый JS, видеокарта для неё не нужна. Контекст
   // видеокарты заводится потом, отдельной задачей: первый контекст будит
   // процесс видеокарты, а тот в начале загрузки бывает ещё занят прошлой
@@ -199,10 +205,25 @@ async function boot(): Promise<void> {
   // Ввод: клавиши, мышь и палец сводятся в одно намерение.
   const input = new Input({ look, target: renderer.domElement })
 
+  // Нутро приходит второй волной, своим деревом коллизий: до него тело знает
+  // только поляну и фасад, и входная дверь заперта.
+  let inside: Inside | null = null
+  let insideTree: Collision | null = null
+  let hatchOpen = false
+  const trees = (): readonly import('three/examples/jsm/math/Octree.js').Octree[] =>
+    insideTree?.ready() ? [collision.octree, insideTree.octree] : [collision.octree]
   const player = new Body({
     camera,
     input,
-    support: createSupport({ octree: collision.octree, heightAt, waterAt: waterDepth }),
+    support: createSupport({
+      trees,
+      heightAt,
+      ground: groundUnder,
+      waterAt: waterDepth,
+      obstacles: () => world.doors.obstacles(),
+      // Закрытая крышка люка - пол; открытая - проём к лестнице.
+      deck: (x, z) => (!hatchOpen && x > HATCH.x0 && x < HATCH.x1 && z > HATCH.z0 && z < HATCH.z1 ? FLOOR.y : null),
+    }),
     // Шаг звучит по поверхности под ногой: грязь, бетон отмостки, лужа.
     onStep: (x, z, _dir, _side, running, surface) => ambient.step(surface as Surface, x, z, running),
     spawn: world.spawn,
@@ -357,12 +378,57 @@ async function boot(): Promise<void> {
   // параллельная компиляция есть, это же проходит быстрее и ничем не мешает.
   // Прогрева порциями по кадрам после этого не нужно: `compile` берёт всю
   // сцену, а не только то, что видно из точки входа.
+  // `compile` при параллельной компиляции только ставит программу в очередь, а
+  // связывает её первая отрисовка - одной длинной задачей на все программы
+  // разом. Опрос форм связывает программу здесь же, в своей задаче.
+  const sync = (m: THREE.Material): void => {
+    const program = (renderer.properties.get(m) as { currentProgram?: { getUniforms(): unknown } }).currentProgram
+    program?.getUniforms()
+  }
+  /** Собрать и связать программы объекта под буфер композера - одна задача. */
+  function compileNow(o: THREE.Object3D): number {
+    const t = performance.now()
+    renderer.setRenderTarget(atmosphere.composer.inputBuffer)
+    for (const m of renderer.compile(o, camera, scene)) sync(m)
+    renderer.setRenderTarget(null)
+    return performance.now() - t
+  }
+  /**
+   * То же без ожидания на главном потоке: программу собирает поток драйвера,
+   * а мы опрашиваем её готовность между задачами и связываем уже собранную.
+   * Для второй волны: у нутра программы тяжелее, и первый кадр подождёт.
+   * Без расширения параллельной сборки программа готова сразу, и это просто
+   * `compileNow` (у первой волны так и есть: её программы лёгкие).
+   */
+  async function compileQuiet(o: THREE.Object3D): Promise<number> {
+    renderer.setRenderTarget(atmosphere.composer.inputBuffer)
+    const list = [...renderer.compile(o, camera, scene)]
+    renderer.setRenderTarget(null)
+    const ready = (m: THREE.Material): boolean => {
+      const p = (renderer.properties.get(m) as { currentProgram?: { isReady?(): boolean } }).currentProgram
+      return p?.isReady?.() ?? true
+    }
+    while (!list.every(ready)) await new Promise((r) => setTimeout(r, 16))
+    const t = performance.now()
+    for (const m of list) sync(m)
+    return performance.now() - t
+  }
+
+  // Материалы поста с нутром. Их программы собираются в прогреве, вместе с
+  // уличными, а не второй волной: на тёплом заходе уличные программы берутся
+  // из кэша, и первая новая программа после появления мира платит за запуск
+  // компилятора - полсекунды одной задачей на программном GL (замер
+  // 23.09.2026), какая бы программа это ни была. За туманом входа та же сборка
+  // стоит по 20-30 мс на программу.
+  const inMats = postMaterials(true)
+  const POST_SWAPS: Array<[string, THREE.Material]> = [
+    ['post-concrete', inMats.concrete],
+    ['post-metal', inMats.metal],
+    ['post-glass', inMats.glass],
+  ]
+
   async function compileSpread(): Promise<void> {
     mark('прогрев начат')
-    const sync = (m: THREE.Material): void => {
-      const program = (renderer.properties.get(m) as { currentProgram?: { getUniforms(): unknown } }).currentProgram
-      program?.getUniforms()
-    }
     const seen = new Set<string>()
     const objects: THREE.Object3D[] = []
     scene.traverse((o) => {
@@ -392,6 +458,19 @@ async function boot(): Promise<void> {
       for (const m of renderer.compile(o, camera, scene)) sync(m)
       renderer.setRenderTarget(null)
       note(o.name || o.type, t)
+      await yieldTask()
+    }
+    // Программы нутра - на настоящих мешах поста, чтобы ключ был тот же, что
+    // у второй волны; меш тут же возвращается к уличному материалу.
+    for (const [name, m] of POST_SWAPS) {
+      const mesh = world.post.group.getObjectByName(name) as THREE.Mesh | undefined
+      if (!mesh) continue
+      const was = mesh.material
+      mesh.material = m
+      const t = performance.now()
+      compileNow(mesh)
+      note(`${name} с нутром`, t)
+      mesh.material = was
       await yieldTask()
     }
     // Проходы кадра: у каждого свои полноэкранные материалы.
@@ -454,6 +533,125 @@ async function boot(): Promise<void> {
     applyScale()
   })
 
+  // --- Вторая волна: нутро --------------------------------------------------
+  // Собирается после первого кадра порциями, пока игрок идёт к посту: до
+  // двери ему не меньше двух минут (tech.md, «Порядок загрузки»).
+  async function buildInside(): Promise<void> {
+    const t0 = performance.now()
+    // Материалы с нутром (`inMats`, собраны в прогреве): фасад и створки
+    // переходят на них - снаружи поверхность та же.
+    const steps = buildInsideSteps(inMats)
+    let built: Inside
+    for (;;) {
+      const r = steps.next()
+      if (r.done) {
+        built = r.value
+        break
+      }
+      await yieldTask()
+    }
+    // Свои программы у нутра - только у предметов: по одной на задачу.
+    const seen = new Set<string>()
+    const mats: THREE.Object3D[] = []
+    built.group.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | undefined
+      if (!(o as THREE.Mesh).isMesh || !m || seen.has(m.uuid)) return
+      seen.add(m.uuid)
+      mats.push(o)
+    })
+    let slowest = 0
+    let slowestName = ''
+    const note = (name: string, ms: number): void => {
+      if (ms > slowest) [slowest, slowestName] = [ms, name]
+    }
+    for (const o of mats) {
+      note(o.name, await compileQuiet(o))
+      await yieldTask()
+    }
+    // Фасад и створки - на материалы с нутром, по материалу на задачу.
+    for (const [name, m] of POST_SWAPS) {
+      const mesh = world.post.group.getObjectByName(name) as THREE.Mesh | undefined
+      if (!mesh) continue
+      mesh.material = m
+      note(name, await compileQuiet(mesh))
+      await yieldTask()
+    }
+    world.doors.group.traverse((o) => {
+      const mesh = o as THREE.Mesh
+      if (!mesh.isMesh) return
+      mesh.material = mesh.name.startsWith('door-glass') ? inMats.glass : inMats.metal
+    })
+    scene.add(built.group)
+    inside = built
+    insideTree = buildCollision(built.solid, () => {
+      const slow = slowestName ? `, дольше всех программа ${slowestName} - ${slowest.toFixed(0)} мс` : ''
+      console.log(`[vigil] нутро готово за ${(performance.now() - t0).toFixed(0)} мс${slow}`)
+    })
+    Object.assign(debug, { inside, insideTree })
+  }
+
+  // Двери этапа нутра. Кто их открывает по сценарию - этапы рук и сценария;
+  // пока сценария нет, внутренние стоят открытыми, а входная открывается
+  // перед тем, кто подошёл к ней вплотную, и закрывается доводчиком за ушедшим.
+  world.doors.prop('inner', 0.95)
+  world.doors.prop('med', 0.9)
+  world.doors.prop('gen', 0.85)
+  const doorX = (DOOR.x0 + DOOR.x1) / 2
+  let entryUnlocked = false
+  let awayFor = 0
+  function doorsTick(dt: number): void {
+    const ready = insideTree?.ready() ?? false
+    const d = Math.hypot(player.pos.x - doorX, (player.pos.z - -0.15) * 1.2)
+    if (ready && d < 1.6) {
+      if (!entryUnlocked) {
+        world.doors.unlock('entry')
+        entryUnlocked = true
+      }
+      world.doors.move('entry', 1, 1.3)
+      awayFor = 0
+    } else if (world.doors.open('entry') > 0) {
+      awayFor += dt
+      if (awayFor > 3 && d > 2.2) world.doors.move('entry', 0, 0.8)
+    }
+    world.doors.update(dt)
+    world.doors.drain()
+  }
+
+  /** Поднять фонарь: пока рук нет, он поднимается, когда игрок подошёл вплотную. */
+  function flashlightTick(dt: number): void {
+    const fl = world.flashlight
+    if (!fl.carried && Math.hypot(player.pos.x - FLASHLIGHT_REST.x, player.pos.z - FLASHLIGHT_REST.z) < 0.9) fl.pick()
+    fl.follow(dt, camera, player.bobT)
+  }
+
+  const lightState = { x: 0, y: 0, z: 0, carried: false, doors: {} as Record<string, number>, mains: true }
+  function lightsTick(dt: number): void {
+    lightState.x = camera.position.x
+    lightState.y = camera.position.y
+    lightState.z = camera.position.z
+    lightState.carried = world.flashlight.carried
+    for (const id of ['entry', 'inner', 'med', 'gen', 'cold'] as const) lightState.doors[id] = world.doors.open(id)
+    lightState.doors.hatch = hatchOpen ? 1 : 0
+    world.lights.update(dt, lightState, camera)
+    // Туман и свет неба идут за зоной игрока: внутри - своя взвесь, внизу - красная.
+    const z = world.lights.zone
+    atmosphere.setInterior(z === 'out' ? 0 : 1, z === 'I' || z === 'J' ? 1 : 0)
+  }
+
+  Object.assign(debug, {
+    /** Открыть люк для проверки: без сюжета он заперт (tech.md, «Загрузчик»). */
+    openHatch: () => {
+      hatchOpen = true
+      const f = inside?.furnish.moving
+      for (const side of ['leaf-left', 'leaf-right']) {
+        const leaf = f?.get(`hatch/${side}`)
+        if (leaf) leaf.rotation.z = (side === 'leaf-left' ? 1 : -1) * 1.72
+      }
+    },
+    census: () => world.lights.census(),
+    zone: () => zoneAt(camera.position.x, camera.position.y, camera.position.z),
+  })
+
   // --- Цикл -------------------------------------------------------------------
   const timer = new THREE.Timer()
   const ear = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: -1 }
@@ -498,7 +696,10 @@ async function boot(): Promise<void> {
       look.update(dt, player)
       player.update(dt)
       if (player.pos.y < FALL_RESET_Y) teleport(world.spawn.x, world.spawn.y, world.spawn.z)
+      flashlightTick(dt)
     }
+    doorsTick(dt)
+    lightsTick(dt)
     weather.update(dt, camera, awake)
     atmosphere.update(dt)
     // Слух - там, где глаз, и смотрит туда же.
@@ -541,6 +742,9 @@ async function boot(): Promise<void> {
   keepOffline() // следующий приход в мир - без сети (offline.ts)
   warmDone = true
   tryUnveil()
+  // Вторая волна - после первого кадра и открытого экрана входа.
+  await yieldTask()
+  void buildInside()
 }
 
 void boot()

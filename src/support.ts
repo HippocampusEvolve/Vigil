@@ -70,15 +70,33 @@ const GROUND_EPS = 0.6
 /** Радиус столбика, которым собираются кандидаты в пол: крест подошвы с запасом. */
 const COLUMN_R = 0.22
 
+/** Створка двери в плане: отрезок от петли до кромки, полутолщина, высоты. */
+export type Obstacle = { ax: number; az: number; bx: number; bz: number; half: number; y0: number; y1: number }
+
 export function createSupport(opts: {
-  /** Дерево построек. Рельефа в нём нет - его форму знает `heightAt`. */
-  octree: Octree
+  /**
+   * Деревья построек. Рельефа в них нет - его форму знает `heightAt`. Деревьев
+   * может быть несколько: нутро собирается второй волной и приходит своим
+   * деревом, когда игрок уже ходит по поляне.
+   */
+  trees: () => readonly Octree[]
   /** Высота рельефа. Земля считается формулой, а не деревом (world/terrain.ts). */
   heightAt: (x: number, z: number) => number
+  /**
+   * Земля под ногами: там, где её нет (внутри поста), - `-Infinity`. Нормаль
+   * склона при этом считается по `heightAt`: у стены поста земля есть, и её
+   * уклон не должен ломаться об пол нутра.
+   */
+  ground?: (x: number, z: number) => number
   /** Глубина воды над грязью: в луже шаг брызжет. Нет - луж нет. */
   waterAt?: (x: number, z: number) => number
+  /** Подвижное твёрдое: створки дверей. */
+  obstacles?: () => readonly Obstacle[]
+  /** Подвижный настил: закрытая крышка люка. Высота или null. */
+  deck?: (x: number, z: number) => number | null
 }): Support {
-  const { octree, heightAt, waterAt } = opts
+  const { heightAt, waterAt } = opts
+  const groundAt = opts.ground ?? heightAt
 
   const capsule = new Capsule(new THREE.Vector3(), new THREE.Vector3(), 0.34)
   // Капсула сбора кандидатов: тонкий столбик в окне высот. Радиус чуть шире
@@ -107,7 +125,7 @@ export function createSupport(opts: {
     column.end.set(x, yFrom - r, z)
     column.radius = r
     tris.length = 0
-    octree.getCapsuleTriangles(column, tris)
+    for (const tree of opts.trees()) tree.getCapsuleTriangles(column, tris)
   }
 
   /**
@@ -161,9 +179,16 @@ export function createSupport(opts: {
         }
       }
 
+      // Подвижный настил (закрытая крышка люка): как настил построек.
+      const d = opts.deck?.(x, z) ?? null
+      if (d !== null && d <= yFrom && d >= yFrom - probe && (y === null || d > y)) {
+        y = d
+        surface = 'concrete'
+      }
+
       // Земля: досягаема шагом и не круче отвеса. Круче - не пол, и тело
       // пойдёт вниз (выталкивает такой склон `resolve`, см. ниже).
-      const g = heightAt(x, z)
+      const g = groundAt(x, z)
       if (g <= yFrom && g >= yFrom - probe && groundNormal(x, z).y >= MIN_FLOOR_NY) {
         if (y === null || g > y) {
           y = g
@@ -189,15 +214,46 @@ export function createSupport(opts: {
       capsule.start.set(pos.x, pos.y + STEP_UP + radius, pos.z)
       capsule.end.set(pos.x, pos.y + height - radius, pos.z)
       capsule.radius = radius
-      const hit = octree.capsuleIntersect(capsule)
-      if (hit && hit.depth >= 1e-10) pos.addScaledVector(hit.normal, hit.depth)
+      for (const tree of opts.trees()) {
+        const hit = tree.capsuleIntersect(capsule)
+        if (hit && hit.depth >= 1e-10) {
+          pos.addScaledVector(hit.normal, hit.depth)
+          capsule.start.set(pos.x, pos.y + STEP_UP + radius, pos.z)
+          capsule.end.set(pos.x, pos.y + height - radius, pos.z)
+        }
+      }
+
+      // Створки: отрезок в плане, если он на высоте тела. Выталкиваем круг
+      // тела от ближайшей точки отрезка.
+      for (const o of opts.obstacles?.() ?? []) {
+        if (o.y1 < pos.y + STEP_UP || o.y0 > pos.y + height) continue
+        const abx = o.bx - o.ax
+        const abz = o.bz - o.az
+        const len2 = abx * abx + abz * abz
+        const t = len2 > 0 ? Math.max(0, Math.min(1, ((pos.x - o.ax) * abx + (pos.z - o.az) * abz) / len2)) : 0
+        const cx = o.ax + abx * t
+        const cz = o.az + abz * t
+        let dx = pos.x - cx
+        let dz = pos.z - cz
+        const d = Math.hypot(dx, dz)
+        const need = radius + o.half
+        if (d >= need) continue
+        if (d < 1e-6) {
+          // Ровно на отрезке: толкаем по нормали к нему.
+          dx = -abz
+          dz = abx
+        }
+        const k = (need - d) / Math.max(Math.hypot(dx, dz), 1e-6)
+        pos.x += dx * k
+        pos.z += dz * k
+      }
 
       // Отвес рельефа. Пол его не держит (круче MIN_FLOOR_NY - не пол), а
       // держать надо: без этой пары строк шаг в сторону скалы уводил бы тело
       // ВНУТРЬ горы, где пола нет уже нигде, и мир кончался бы сбросом по
       // высоте падения. Выталкиваем по нормали, остаток тянет гравитация -
       // получается сползание вниз, а не подъём по стене.
-      const depth = heightAt(pos.x, pos.z) - pos.y
+      const depth = groundAt(pos.x, pos.z) - pos.y
       if (depth > 0) {
         const n = groundNormal(pos.x, pos.z)
         if (n.y < MIN_FLOOR_NY) pos.addScaledVector(n, depth * n.y)

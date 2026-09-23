@@ -67,6 +67,16 @@ export const SETTINGS = {
   flashFog: 1.6,
   flashSky: 6,
   flashExposure: 0.25,
+  /**
+   * Внутри своя взвесь: темнее и реже уличного тумана, видна в луче фонаря;
+   * внизу гуще и с красным оттенком (look.md, «Туман и небо»).
+   */
+  indoorFog: 0x0b1314,
+  indoorDensity: 0.02,
+  lowerFog: 0x1c0a08,
+  lowerDensity: 0.05,
+  /** Как быстро туман перетекает из уличного во внутренний, 1/с. */
+  indoorRate: 2.5,
 } as const
 
 /** Цвет, к которому пелена ведёт туман: фон страницы, почти чёрный. */
@@ -291,6 +301,13 @@ export function createAtmosphere(
   let veilDark = 0
   let light = 1
   let density: number = SETTINGS.fogDensity
+  // Доля «внутри» и «внизу»: едут к цели, туман смешивается по ним.
+  let inside = 0
+  let lower = 0
+  let insideTarget = 0
+  let lowerTarget = 0
+  const fogIndoor = new THREE.Color(SETTINGS.indoorFog)
+  const fogLower = new THREE.Color(SETTINGS.lowerFog)
 
   function setVeil(densityTimes: number, darkness: number): void {
     veilTimes = densityTimes
@@ -304,10 +321,15 @@ export function createAtmosphere(
   const flashFog = new THREE.Color()
 
   /** Раз в кадр: туман, небо и экспозиция из погоды, пелены и вспышки. */
-  function update(_dt: number): void {
+  function update(dt: number): void {
     const f = FLASH.value
-    fog.density = density * veilTimes
-    flashFog.copy(fogBase).multiplyScalar(1 + (SETTINGS.flashFog - 1) * f)
+    const k = 1 - Math.exp(-SETTINGS.indoorRate * dt)
+    inside += (insideTarget - inside) * k
+    lower += (lowerTarget - lower) * k
+    const inDensity = SETTINGS.indoorDensity + (SETTINGS.lowerDensity - SETTINGS.indoorDensity) * lower
+    fog.density = (density + (inDensity - density) * inside) * veilTimes
+    flashFog.copy(fogBase).multiplyScalar(1 + (SETTINGS.flashFog - 1) * f * (1 - inside))
+    flashFog.lerp(fogIndoor, inside).lerp(fogLower, lower * inside)
     fog.color.copy(flashFog).lerp(fogDark, veilDark)
     hemi.intensity = SETTINGS.skyLight * (1 + SETTINGS.flashSky * f)
     exposure.exposure = SETTINGS.exposure * light * (1 + SETTINGS.flashExposure * f)
@@ -325,6 +347,11 @@ export function createAtmosphere(
     hemi,
     setVeil,
     setLight,
+    /** Где игрок: 1 - внутри поста, `lowerLevel` 1 - внизу. Туман перетекает плавно. */
+    setInterior(insideLevel: number, lowerLevel: number): void {
+      insideTarget = insideLevel
+      lowerTarget = lowerLevel
+    },
     /** Штатная плотность тумана: буря её держит, ясное небо опускает. */
     setDensity(v: number): void {
       density = v
