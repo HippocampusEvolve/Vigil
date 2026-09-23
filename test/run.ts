@@ -4,6 +4,7 @@
  */
 
 import './awaken.test'
+import './furnish.test'
 import './layer.test'
 import './sound.test'
 import './weather.test'
