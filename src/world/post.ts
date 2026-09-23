@@ -57,7 +57,15 @@ export type Post = {
   glow: THREE.Mesh
   /** Детали по отдельности, для проверки наложений. */
   bodies: Array<{ name: string; geometry: THREE.BufferGeometry }>
+  /** Твёрдое для тела: простые коробки деталей, до которых тело достаёт. */
+  colliders: THREE.Mesh
 }
+
+/**
+ * Выше этой отметки деталь телу не достать: рост 1.66 м, и свод, навес,
+ * лампа, водосток и выхлоп висят над головой. В дерево коллизий они не идут.
+ */
+const REACH = 1.8
 
 /**
  * Сила свечения трубки. Трубка тоньше пикселя уже с десяти метров, и видно
@@ -67,7 +75,7 @@ export type Post = {
 export const TUBE_POWER = 12
 
 /** Ореол лампы: сила ядра, ближнего свечения и широкого, и запас карточки, м. */
-export const GLOW = { core: 10, halo: 1.5, wide: 1.2, pad: 1.3 } as const
+export const GLOW = { core: 8, halo: 1.3, wide: 1.2, pad: 1.3 } as const
 
 /** Сегменты свода по дуге: на 24 метрах свода меньше - видны грани. */
 const VAULT_SEG = 28
@@ -214,7 +222,21 @@ class Pieces extends Array<THREE.BufferGeometry> {
   names: string[] = []
 }
 
+/** Пост целиком одним куском: для проверок на Node. */
 export function buildPost(): Post {
+  const steps = buildPostSteps()
+  for (;;) {
+    const r = steps.next()
+    if (r.done) return r.value
+  }
+}
+
+/**
+ * Пост по шагам: генератор отдаёт управление между частями - ангар, блок с
+ * дверью и лампой, мелочь фасада, слияние. Одним куском сборка держала поток
+ * около сорока миллисекунд, а на занятом процессоре - вдвое дольше.
+ */
+export function* buildPostSteps(): Generator<void, Post, void> {
   const parts: Part[] = []
   const concrete = new Pieces()
   const metal = new Pieces()
@@ -304,6 +326,8 @@ export function buildPost(): Post {
     note(`окно ${cx}`, h.u0 - 0.06, h.u1 + 0.06, h.v0 - 0.06, h.v1, HANGAR.z1 - t, HANGAR.z1 + 0.06)
   }
 
+  yield
+
   // --- Входной блок ------------------------------------------------------------
   const top = BLOCK.height + BLOCK.parapet
   const w = BLOCK.wall
@@ -376,6 +400,8 @@ export function buildPost(): Post {
   const tube = new THREE.Mesh(tubeGeo, tubeMat)
   tube.name = 'entry-tube'
   const glow = lampGlow()
+
+  yield
 
   // --- Домофон, выключатель, табличка ------------------------------------------
   const ix0 = INTERCOM.x - INTERCOM.w / 2
@@ -503,6 +529,8 @@ export function buildPost(): Post {
     note('геофон', GEOPHONE.x - 0.04, GEOPHONE.x + 0.04, g - 0.3, g + 0.38, GEOPHONE.z - 0.04, GEOPHONE.z + 0.04)
   }
 
+  yield
+
   // --- Сборка ---------------------------------------------------------------------
   const group = new THREE.Group()
   group.name = 'post'
@@ -546,5 +574,12 @@ export function buildPost(): Post {
   }
   const bodies = [...byName].map(([name, geos]) => ({ name, geometry: merge(geos) }))
 
-  return { group, solid: [concreteMesh, metalMesh], parts, tube, glow, bodies }
+  // Коллайдеры - рамки деталей, а не их треугольники: тело упирается в стену,
+  // а не в болт на решётке, и дерево коллизий строится в десятки раз быстрее.
+  const boxes = parts.filter((p) => p.y0 < REACH).map((p) => box(p.x0, p.x1, p.y0, p.y1, p.z0, p.z1))
+  const colliders = new THREE.Mesh(merge(boxes), new THREE.MeshBasicMaterial({ visible: false }))
+  colliders.name = 'post-colliders'
+  colliders.visible = false
+
+  return { group, solid: [concreteMesh, metalMesh], parts, tube, glow, bodies, colliders }
 }

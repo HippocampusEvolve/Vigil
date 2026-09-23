@@ -16,9 +16,9 @@ import * as THREE from 'three'
 import { BODY } from '../player'
 import { heightAt } from './terrain'
 import { buildGroundSteps } from './ground'
-import { buildPost, type Post } from './post'
+import { buildPostSteps, type Post } from './post'
 import { planForestSteps, type ForestPlan } from './forest-plan'
-import { buildForest, type Forest } from './forest'
+import { buildForestSteps, type Forest } from './forest'
 import { buildCables } from './cables'
 import { buildBounds } from './bounds'
 import { buildFlashlight, type Flashlight } from './flashlight'
@@ -46,8 +46,13 @@ export type World = {
 
 /** Лампа входа: числа света - look.md, «Лампа входа». */
 export const LAMP_LIGHT = {
-  color: 0x6cb398,
-  intensity: 105,
+  /**
+   * Свет на поверхностях насыщеннее самой трубки: пересвеченная трубка на
+   * кривой уходит в белое, а то, что она освещает, на референсе - сочная
+   * зелень (проём #458d54, трава #5c9360).
+   */
+  color: 0x3aa86a,
+  intensity: 145,
   /** Полуугол конуса, рад: широкий, как у трубки под навесом. */
   angle: (70 * Math.PI) / 180,
   penumbra: 0.35,
@@ -143,9 +148,18 @@ export function* buildWorldSteps(aspect: number): Generator<string, World, void>
   }
   yield 'земля'
 
-  const post = buildPost()
+  const postSteps = buildPostSteps()
+  let post: Post
+  for (;;) {
+    const r = postSteps.next()
+    if (r.done) {
+      post = r.value
+      break
+    }
+    yield 'пост'
+  }
   group.add(post.group)
-  for (const o of post.solid) solid.add(o.clone())
+  solid.add(post.colliders)
   const lamp = buildLamp()
   group.add(lamp, lamp.target)
   LAMP.power.value = 1
@@ -163,7 +177,16 @@ export function* buildWorldSteps(aspect: number): Generator<string, World, void>
   }
   yield 'план леса'
 
-  const forest = buildForest(plan)
+  const forestSteps = buildForestSteps(plan)
+  let forest: Forest
+  for (;;) {
+    const r = forestSteps.next()
+    if (r.done) {
+      forest = r.value
+      break
+    }
+    yield 'лес'
+  }
   group.add(forest.group)
   yield 'лес'
 

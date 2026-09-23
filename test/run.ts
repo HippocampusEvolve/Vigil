@@ -5,3 +5,5 @@
 
 import './awaken.test'
 import './layer.test'
+import './sound.test'
+import './weather.test'

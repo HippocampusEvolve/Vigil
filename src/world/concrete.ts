@@ -147,7 +147,9 @@ export function concreteMaterial(): THREE.MeshStandardMaterial {
            float d = lampDistance(vCWorld);
            vec3 n = normalize(vCNormal);
            float facing = max(0.0, -n.y) + 0.9 * max(0.0, n.z);
-           totalEmissiveRadiance += uLampColor * uLampPower * 0.6 * facing * exp(-d * 0.7);
+           // Вершина плоская: в упор у трубки стена не горит ярче ореола, а
+           // разлив держится на метр вокруг двери, как на референсе.
+           totalEmissiveRadiance += uLampColor * uLampPower * facing * min(0.5, 0.85 * exp(-d * 0.65));
          }`,
       )
   }

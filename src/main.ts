@@ -43,13 +43,13 @@ import { keepOffline } from './offline'
 import { createAtmosphere, type Atmosphere } from './atmosphere'
 import { createAmbient } from './ambient'
 import { createAwakening, type Awakening } from './awaken'
-import { createSupport, STEP_UP } from './support'
+import { createSupport, STEP_UP, type Surface } from './support'
 import { createTouch, touchForced, touchSupported, type Touch } from './touch'
 import { BODY, LOOK } from './player'
 import { layer } from './layer'
 import { buildWorldSteps, type World } from './world'
 import { buildCollision, type Collision } from './world/collision'
-import { heightAt } from './world/terrain'
+import { heightAt, waterDepth } from './world/terrain'
 import { EYE_LOW, FOCUS_FOV } from './world/layout'
 import { createWeather, type Weather } from './weather'
 import { SKY_RADIUS } from './weather/sky'
@@ -136,8 +136,33 @@ Object.assign(window, { vigil: debug })
 const FALL_RESET_Y = -20
 
 async function boot(): Promise<void> {
-  // Контекст видеокарты - отдельной задачей: первый контекст в браузере
-  // будит процесс видеокарты, и это десятки миллисекунд сами по себе.
+  // Сперва мир: его сборка - чистый JS, видеокарта для неё не нужна. Контекст
+  // видеокарты заводится потом, отдельной задачей: первый контекст будит
+  // процесс видеокарты, а тот в начале загрузки бывает ещё занят прошлой
+  // страницей - синхронный вызов ждал его сотни миллисекунд.
+  await yieldTask()
+  // Флаги готовности - до всего: дерево коллизий может достроиться раньше,
+  // чем дойдёт очередь до экрана входа, и его обработчик их уже спросит.
+  let treeReady = false
+  let warmDone = false
+  let worldUnveiled = false
+  const t0 = performance.now()
+  const world = await buildWorld()
+  if (qualityName !== 'high') world.forest.setDensity(qualityName === 'low' ? 0.5 : 0.75)
+  console.log(`[vigil] мир собран за ${(performance.now() - t0).toFixed(0)} мс`)
+  mark('мир собран')
+  // Слой данных необязателен: без него мир идёт без текстов и событий.
+  console.log(`[vigil] слой данных: ${layer.present ? layer.names.join(', ') : 'нет'}`)
+  await yieldTask()
+
+  // В дерево идут только коллайдеры поста, стволы и край: земля считается
+  // формулой heightAt. Строится оно порциями между кадрами (`world/collision.ts`).
+  const collision: Collision = buildCollision(world.solid, () => {
+    treeReady = true
+    mark('дерево коллизий')
+    tryUnveil()
+  })
+
   const canvas = document.createElement('canvas')
   const gl = canvas.getContext('webgl2', {
     alpha: false,
@@ -163,27 +188,9 @@ async function boot(): Promise<void> {
     onThunder: (delay, near) => ambient.thunder(delay, near),
   })
   scene.add(weather.group)
+  scene.add(world.group)
   Object.assign(debug, { renderer, atmosphere, weather })
   await yieldTask()
-
-  const t0 = performance.now()
-  const world = await buildWorld()
-  scene.add(world.group)
-  if (qualityName !== 'high') world.forest.setDensity(qualityName === 'low' ? 0.5 : 0.75)
-  console.log(`[vigil] мир собран за ${(performance.now() - t0).toFixed(0)} мс`)
-  mark('мир собран')
-  // Слой данных необязателен: без него мир идёт без текстов и событий.
-  console.log(`[vigil] слой данных: ${layer.present ? layer.names.join(', ') : 'нет'}`)
-  await yieldTask()
-
-  // В дерево идут только постройки, стволы и край: земля считается формулой
-  // heightAt. Строится оно порциями между кадрами (`world/collision.ts`).
-  let treeReady = false
-  const collision: Collision = buildCollision(world.solid, () => {
-    treeReady = true
-    mark('дерево коллизий')
-    tryUnveil()
-  })
 
   // --- Игрок --------------------------------------------------------------------
   // Взгляд владеет ориентацией камеры, тело - движением.
@@ -195,7 +202,9 @@ async function boot(): Promise<void> {
   const player = new Body({
     camera,
     input,
-    support: createSupport({ octree: collision.octree, heightAt }),
+    support: createSupport({ octree: collision.octree, heightAt, waterAt: waterDepth }),
+    // Шаг звучит по поверхности под ногой: грязь, бетон отмостки, лужа.
+    onStep: (x, z, _dir, _side, running, surface) => ambient.step(surface as Surface, x, z, running),
     spawn: world.spawn,
     eye: BODY.eye,
     height: BODY.height,
@@ -424,9 +433,6 @@ async function boot(): Promise<void> {
   // Туман снимает полная сборка мира: собрано дерево коллизий и прогрета сцена.
   // К нему же привязано начало появления: пелена мира отходит тогда, когда
   // расходится туман меню.
-  let warmDone = false
-  let worldUnveiled = false
-
   function unveilWorld(): void {
     if (worldUnveiled) return
     worldUnveiled = true
@@ -450,6 +456,8 @@ async function boot(): Promise<void> {
 
   // --- Цикл -------------------------------------------------------------------
   const timer = new THREE.Timer()
+  const ear = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: -1 }
+  const earDir = new THREE.Vector3()
   const PAUSE_FRAME_MS = 1000 / 30
   let nextPauseFrameAt = 0
 
@@ -493,7 +501,15 @@ async function boot(): Promise<void> {
     }
     weather.update(dt, camera, awake)
     atmosphere.update(dt)
-    ambient.update(dt)
+    // Слух - там, где глаз, и смотрит туда же.
+    camera.getWorldDirection(earDir)
+    ear.x = camera.position.x
+    ear.y = camera.position.y
+    ear.z = camera.position.z
+    ear.fx = earDir.x
+    ear.fy = earDir.y
+    ear.fz = earDir.z
+    ambient.update(dt, ear)
     atmosphere.composer.render()
     // Снимок первого кадра после появления - по просьбе из консоли или обмера.
     if (awake && !wasAwake && debug.captureFirst) {

@@ -63,8 +63,10 @@ export function createSupport(opts: {
   octree: Octree
   /** Высота рельефа. Земля считается формулой, а не деревом (world/terrain.ts). */
   heightAt: (x: number, z: number) => number
+  /** Глубина воды над грязью: в луже шаг брызжет. Нет - луж нет. */
+  waterAt?: (x: number, z: number) => number
 }): Support {
-  const { octree, heightAt } = opts
+  const { octree, heightAt, waterAt } = opts
 
   const capsule = new Capsule(new THREE.Vector3(), new THREE.Vector3(), 0.34)
   // Капсула сбора кандидатов: тонкий столбик в окне высот. Радиус чуть шире
@@ -153,7 +155,8 @@ export function createSupport(opts: {
       if (g <= yFrom && g >= yFrom - probe && groundNormal(x, z).y >= MIN_FLOOR_NY) {
         if (y === null || g > y) {
           y = g
-          surface = 'mud'
+          // Лужа мельче сантиметра - это мокрая грязь, а не вода.
+          surface = waterAt && waterAt(x, z) > 0.01 ? 'water' : 'mud'
         }
       }
 

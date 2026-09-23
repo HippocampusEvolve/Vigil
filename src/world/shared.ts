@@ -21,7 +21,7 @@ export const RAIN_TIME = { value: 0 }
 export const LAMP = {
   a: { value: new THREE.Vector3(ENTRY_LAMP.x0, ENTRY_LAMP.y, ENTRY_LAMP.z) },
   b: { value: new THREE.Vector3(ENTRY_LAMP.x1, ENTRY_LAMP.y, ENTRY_LAMP.z) },
-  color: { value: new THREE.Color(0x6cb398) },
+  color: { value: new THREE.Color(0x3aa86a) },
   power: { value: 1 },
 }
 

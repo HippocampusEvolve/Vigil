@@ -390,7 +390,8 @@ function tints(seed: number, base: number, spread: number): (i: number) => THREE
   }
 }
 
-export function buildForest(plan: ForestPlan): Forest {
+/** Лес по шагам: стволы и атлас, потом листва. */
+export function* buildForestSteps(plan: ForestPlan): Generator<void, Forest, void> {
   const group = new THREE.Group()
   group.name = 'forest'
   const atlas = leafAtlas()
@@ -409,6 +410,8 @@ export function buildForest(plan: ForestPlan): Forest {
   trunks.name = 'trunks'
   group.add(trunks)
 
+  yield
+
   const leafMat = foliageMaterial(atlas, 0.06)
   const hangMat = foliageMaterial(atlas, 0.12)
   const crownMat = foliageMaterial(atlas, 0.0)
@@ -423,6 +426,7 @@ export function buildForest(plan: ForestPlan): Forest {
   add(instanced(plantGeometry('split', 12), leafMat, byKind('split'), tints(2, 0x4f7d44, 0.4), 'plants-split'))
   add(instanced(plantGeometry('fern', 13), leafMat, byKind('fern'), tints(3, 0x5f8a4e, 0.5), 'plants-fern'))
   add(instanced(plantGeometry('grass', 14), leafMat, byKind('grass'), tints(4, 0x6e8f52, 0.5), 'plants-grass'))
+  yield
 
   // Кроны пальм - на вершинах их стволов, по наклону оси.
   const palms = plan.trunks
