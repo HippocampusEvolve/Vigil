@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import * as THREE from 'three'
 
 import { furnishMaterials, furnishSteps, GLOW_ROLES, type Furnish, type Item, type Look } from '../src/world/furnish'
-import { LAMP_APART, LAMPS, PALETTE, PLACEMENT, ROOM_ITEMS } from '../src/world/placement'
+import { LAMP_APART, LAMPS, LIVE, PALETTE, PLACEMENT, ROOM_ITEMS } from '../src/world/placement'
 import { ceilingAt, FIXTURES, PORTALS, ROOMS, zoneAt, type RoomId } from '../src/world/zones'
 
 function build(items: Item[] = PLACEMENT): Furnish {
@@ -184,12 +184,16 @@ test('крышка люка: створки на оси Z, левая откры
   assert.equal(built.placed.get('hatch')!.group.rotation.y, 0)
 })
 
-test('подвижные части: группа на своих осях, детали слиты по краскам', () => {
-  assert.ok(built.moving.size > 20)
+test('подвижные части: живые - только у тех, кого двигает этап, и слиты по краскам', () => {
   for (const [key, part] of built.moving) {
+    assert.ok(LIVE.has(key.split('/')[0]), `${key}: подвижная часть у предмета, которого этап не двигает`)
     const meshes = part.children.filter((c) => (c as THREE.Mesh).isMesh)
-    assert.ok(meshes.length <= 3, `${key}: мешей ${meshes.length}`)
+    assert.ok(meshes.length >= 1 && meshes.length <= 3, `${key}: мешей ${meshes.length}`)
   }
+  for (const name of LIVE) assert.ok([...built.moving.keys()].some((k) => k.startsWith(`${name}/`)), `у «${name}» нет подвижных частей`)
+  // Слитое по-прежнему можно оживить: без `still` части снова отдельные.
+  const live = build(PLACEMENT.filter((i) => i.name === 'desk').map((i) => ({ ...i, still: false })))
+  assert.equal([...live.moving.keys()].filter((k) => k.startsWith('desk/')).length, 3)
 })
 
 test('материалы предметов - одни на всё нутро, сила светильников подключается', () => {

@@ -777,18 +777,29 @@ const ROOM_J: Item[] = [
   ),
 ]
 
+/**
+ * Чьи подвижные части этот этап двигает: только створки люка
+ * (`debug.openHatch` в main.ts). У остальных предметов стрелки, тумблеры,
+ * катушки, дверцы и крышки слиты с неподвижным своей комнаты: вызов отрисовки
+ * на комнату, а не на каждую стрелку, - иначе нутро, видное с поляны сквозь
+ * стены, одно съедает рамку кадра. Этап рук оживит нужные, добавив имя сюда.
+ */
+export const LIVE = new Set(['hatch'])
+
+const settle = (items: Item[]): Item[] => items.map((i) => (LIVE.has(i.name) ? i : { ...i, still: true }))
+
 /** Обстановка по комнатам: тест проверяет, что каждый предмет в своей. */
 export const ROOM_ITEMS: Record<RoomId, Item[]> = {
-  A: ROOM_A,
-  B: ROOM_B,
-  C: ROOM_C,
-  D: ROOM_D,
-  E: ROOM_E,
-  F: ROOM_F,
-  G: ROOM_G,
-  H: ROOM_H,
-  I: ROOM_I,
-  J: ROOM_J,
+  A: settle(ROOM_A),
+  B: settle(ROOM_B),
+  C: settle(ROOM_C),
+  D: settle(ROOM_D),
+  E: settle(ROOM_E),
+  F: settle(ROOM_F),
+  G: settle(ROOM_G),
+  H: settle(ROOM_H),
+  I: settle(ROOM_I),
+  J: settle(ROOM_J),
 }
 
 /** Всё нутро одним списком: так его берёт `furnishSteps`. */
