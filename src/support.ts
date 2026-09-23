@@ -18,8 +18,8 @@ import { Capsule } from 'three/examples/jsm/math/Capsule.js'
 import { Octree } from 'three/examples/jsm/math/Octree.js'
 import type { Support } from 'world-core/core'
 
-/** На чём стоим. Нужно звуку: грязь чавкает, бетон щёлкает. */
-export type Surface = 'mud' | 'concrete'
+/** На чём стоим. Нужно звуку: грязь чавкает, бетон щёлкает, лужа брызжет. */
+export type Surface = 'mud' | 'concrete' | 'water'
 
 /**
  * Круче ~57° — уже не пол, а скала: по ней съезжают, а не поднимаются.
