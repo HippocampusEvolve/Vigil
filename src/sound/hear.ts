@@ -12,11 +12,13 @@
  *                 расстояния от самого источника, дальше расходится от
  *                 дальней грани с опорой 1 м.
  *                 Открытый проём срезает верх на 1 кГц, каждый следующий по
- *                 пути - ещё ниже; закрытая дверь срезает на 300 Гц и
- *                 отнимает свою потерю. Доля открытия смешивает два случая:
- *                 срез и потеря идут между ними по логарифму.
+ *                 пути - ещё ниже; закрытая дверь срезает на 300 Гц (входная,
+ *                 с окошком, - на 1 кГц) и отнимает свою потерю. Доля
+ *                 открытия смешивает два случая: срез и потеря идут между
+ *                 ними по логарифму.
  *   СКВОЗЬ СТЕНУ  если комнаты делят стену или перекрытие (или комната
- *                 выходит стеной на улицу). Стена - тоже новый источник: звук
+ *                 выходит стеной на улицу), а проёма между ними нет: стена с
+ *                 дверью звучит своей дверью. Стена - тоже новый источник: звук
  *                 доходит до её ближней к источнику грани, теряет своё и
  *                 расходится от дальней грани с опорой 1 м. Так генератор за
  *                 стеной звучит своей комнатой, а часы в дальнем углу - почти
@@ -213,10 +215,23 @@ export function route(a: ZoneId, b: ZoneId): Portal[] {
   return path
 }
 
-/** Срез одного проёма при доле открытия `o`: между закрытым и открытым по логарифму. */
-export function portalCutoff(o: number): number {
-  return SHADE.closed * Math.pow(SHADE.open / SHADE.closed, o)
+/**
+ * Срез одного проёма при доле открытия `o`: между закрытым и открытым по
+ * логарифму. У двери со своим срезом (`SHADE.leaky`) закрытое полотно режет
+ * выше стены.
+ */
+export function portalCutoff(o: number, door?: DoorId): number {
+  const closed = (door && SHADE.leaky[door]) || SHADE.closed
+  const open = Math.max(SHADE.open, closed)
+  return closed * Math.pow(open / closed, o)
 }
+
+/**
+ * Комнаты, между которыми есть проём. Стена с проёмом звучит своим проёмом:
+ * полотно и щели пропускают больше бетона вокруг, и звук сквозь такую стену
+ * - это звук через её дверь (`SHADE.loss.door`), а не второй путь рядом.
+ */
+const JOINED = new Set(PORTALS.flatMap((p) => [`${p.a}|${p.b}`, `${p.b}|${p.a}`]))
 
 /** Тонкая ось проёма: вдоль неё проём проходят насквозь. */
 function thinAxis(p: Portal): Axis {
@@ -262,7 +277,7 @@ function viaPortals(src: Source, from: ZoneId, ear: Point, zone: ZoneId, doors: 
     gain *= falloff(dist(prev, faceOf(p, here)), 1)
     const o = p.door ? clamp(doors[p.door] ?? 0, 0, 1) : 1
     gain *= Math.pow(db(lossOf(p)), 1 - o)
-    cutoff = Math.min(cutoff, portalCutoff(o))
+    cutoff = Math.min(cutoff, portalCutoff(o, p.door))
     here = p.a === here ? p.b : p.a
     prev = faceOf(p, here)
   }
@@ -323,7 +338,8 @@ export function hear(src: Source, ear: Point, zone: ZoneId, doors: Doors): Heard
       const at = src.at ?? ear
       return { gain: src.at ? falloff(dist(ear, src.at), src.ref) : 1, cutoff: Infinity, at, from: at, same: true }
     }
-    const h = merge(viaPortals(src, from, ear, zone, doors), throughWall(src, from, ear, zone))
+    const wall = JOINED.has(`${from}|${zone}`) ? null : throughWall(src, from, ear, zone)
+    const h = merge(viaPortals(src, from, ear, zone, doors), wall)
     if (h && (!best || h.gain > best.gain)) best = h
   }
   return best ?? { gain: 0, cutoff: SHADE.floor, at: ear, from: ear, same: false }

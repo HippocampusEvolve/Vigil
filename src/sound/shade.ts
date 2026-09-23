@@ -18,10 +18,24 @@ import { SEND, SHADE } from './levels'
 import type { Bus, Mixer } from './mixer'
 import { panOf, qOf, Spot, WRITE_EVERY, type Ear, type How } from './place'
 
-/** Полная полоса: срез у верхней границы слуха, ниже Найквиста с запасом. */
+/**
+ * Полная полоса - ровно половина частоты дискретизации: на ней срез по
+ * спецификации WebAudio становится тождеством и не трогает ничего. Чуть ниже
+ * это уже не так: срез на 20 кГц звенит у самого Найквиста и на резком фронте
+ * (треск близкого удара) поднимает пик на 3-5 дБ - снято счётом. Выше
+ * Найквиста фильтр неустойчив, туда нельзя даже целиться.
+ */
 export function fullBand(ctx: BaseAudioContext): number {
-  return Math.min(20000, ctx.sampleRate * 0.45)
+  return ctx.sampleRate / 2
 }
+
+/**
+ * Через сколько постоянных срез, уехавший к полной полосе, дописывается в неё
+ * точно: экспонента к цели не приходит никогда, а в шаге от Найквиста фильтр
+ * ещё не тождество. К этому сроку до цели остаются герцы выше слуха, и
+ * скачок не слышен.
+ */
+const SNAP = 8
 
 /** Срез: пишет в узел только заметную перемену и не чаще `WRITE_EVERY`, кроме сдвига. */
 class Cutoff {
@@ -37,12 +51,18 @@ class Cutoff {
   set(target: number, how: How): void {
     const hz = Math.min(this.full, target)
     const t = this.ctx.currentTime
+    const f = this.node.frequency
     if (how === 'now' || how === 'fade' || this.hz < 0) {
-      this.node.frequency.setValueAtTime(hz, t)
+      f.cancelScheduledValues(t)
+      f.setValueAtTime(hz, t)
     } else {
       if (Math.abs(Math.log(hz / this.hz)) < 0.05) return
       if (how === 'glide' && t - this.at < WRITE_EVERY) return
-      this.node.frequency.setTargetAtTime(hz, t, SHADE.tau)
+      // Прошлый доезд к полной полосе мог оставить точную запись впереди: она
+      // больше не нужна, иначе фильтр прыгнет в полную полосу посреди нового пути.
+      f.cancelScheduledValues(t)
+      f.setTargetAtTime(hz, t, SHADE.tau)
+      if (hz === this.full) f.setValueAtTime(hz, t + SHADE.tau * SNAP)
     }
     this.hz = hz
     this.at = t

@@ -91,6 +91,21 @@ test('каждая закрытая дверь по пути отнимает е
   assert.ok(hear(gen, inA, 'A', shutDoors()).gain < hear(gen, inB, 'B', shutDoors()).gain)
 })
 
+test('улица в тамбуре - через закрытую входную дверь со срезом 1 кГц, дальше - как через стену', () => {
+  const street = { rooms: ['out'] as const, ref: 1 }
+  const inA = { x: 2.5, y: 1.6, z: -1.2 }
+  assert.equal(zoneAt(inA.x, inA.y, inA.z), 'A')
+  const a = hear(street, inA, 'A', shutDoors())
+  assert.ok(near(a.cutoff, 1000, 1e-6), `срез в тамбуре ${a.cutoff.toFixed(0)} Гц`)
+  assert.ok(-dB(a.gain) >= 12 - 1e-9 && -dB(a.gain) <= 20, `потеря ${(-dB(a.gain)).toFixed(1)} дБ`)
+  const inB = { x: 3, y: 1.6, z: -3.1 }
+  const b = hear(street, inB, 'B', shutDoors())
+  assert.ok(b.cutoff <= 400, `срез в коридоре ${b.cutoff.toFixed(0)} Гц`)
+  // Открытая входная: срез тот же, потери нет.
+  const open = hear(street, inA, 'A', doorsWith('entry', 1))
+  assert.ok(near(open.cutoff, 1000, 1e-6) && open.gain > a.gain * 3.9)
+})
+
 test('улица внизу почти не слышна: пять проёмов, три из них закрыты', () => {
   const r = ROOMS.I
   const ear = { x: (r.x0 + r.x1) / 2, y: r.floor + 1.6, z: (r.z0 + r.z1) / 2 }
