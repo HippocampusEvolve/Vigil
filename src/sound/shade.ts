@@ -2,10 +2,11 @@
  * sound/shade.ts - затенение на узлах: срез верха и место источника по тому,
  * что насчитал `hear.ts`.
  *
- * `Shaded` - источник за преградой: фильтр среза, за ним место (`Spot`:
- * громкость, панорама, сухо и посыл). Фильтр едет `setTargetAtTime` с
- * постоянной 0.15 с - без щелчков, - и пишется редко: только когда срез ушёл
- * заметно и не чаще раза в `WRITE_EVERY`, кроме смены зоны - тогда сразу.
+ * `Shaded` - источник за преградой: срез верха, за ним место (`Spot`:
+ * громкость, панорама, сухо и посыл). Срез едет `setTargetAtTime` с
+ * постоянной 0.15 с - без щелчков, - и пишется редко: только когда он ушёл
+ * заметно и не чаще раза в `WRITE_EVERY`, кроме смены зоны - тогда сразу. В
+ * полной полосе фильтра на пути нет вовсе (`OPEN_ABOVE`).
  *
  * `createOutside` - улица для тех, кто внутри. Слои поляны, гром и опушка
  * звучат не прямо в шины микшера, а в такие же шины улицы, и те идут в
@@ -19,51 +20,53 @@ import type { Bus, Mixer } from './mixer'
 import { panOf, qOf, Spot, WRITE_EVERY, type Ear, type How } from './place'
 
 /**
- * Полная полоса - ровно половина частоты дискретизации: на ней срез по
- * спецификации WebAudio становится тождеством и не трогает ничего. Чуть ниже
- * это уже не так: срез на 20 кГц звенит у самого Найквиста и на резком фронте
- * (треск близкого удара) поднимает пик на 3-5 дБ - снято счётом. Выше
- * Найквиста фильтр неустойчив, туда нельзя даже целиться.
+ * Выше этого среза затенения нет вовсе: звук идёт мимо фильтра. Полная полоса
+ * - это не фильтр на краю слуха, а его отсутствие: срез на 20 кГц звенит у
+ * самого Найквиста и на резком фронте (треск близкого удара) поднимает пик на
+ * 3-5 дБ, а срез ровно на Найквисте по формулам спецификации ставит полюса на
+ * единичную окружность, и в движке без особого случая для него (так у
+ * node-web-audio-api) там копится звон на 24 кГц - снято счётом. Поэтому у
+ * источника две дороги, прямая и через фильтр, и между ними перекрёстное
+ * затухание. Доля частоты дискретизации: на 48 кГц это 19.2 кГц.
  */
-export function fullBand(ctx: BaseAudioContext): number {
-  return ctx.sampleRate / 2
-}
+export const OPEN_ABOVE = 0.4
 
 /**
- * Через сколько постоянных срез, уехавший к полной полосе, дописывается в неё
- * точно: экспонента к цели не приходит никогда, а в шаге от Найквиста фильтр
- * ещё не тождество. К этому сроку до цели остаются герцы выше слуха, и
- * скачок не слышен.
+ * Срез одного источника: фильтр и две дороги. Пишет в узлы только заметную
+ * перемену и не чаще `WRITE_EVERY`, кроме сдвига; всё едет `setTargetAtTime`
+ * с постоянной `SHADE.tau`. Уходя в полную полосу, фильтр едет к
+ * `OPEN_ABOVE`, а звук тем временем перетекает на прямую дорогу.
  */
-const SNAP = 8
-
-/** Срез: пишет в узел только заметную перемену и не чаще `WRITE_EVERY`, кроме сдвига. */
-class Cutoff {
+class Band {
   private hz = -1
   private at = -Infinity
+  private readonly top: number
 
   constructor(
     private readonly ctx: BaseAudioContext,
-    private readonly node: BiquadFilterNode,
-    private readonly full: number
-  ) {}
+    private readonly filter: BiquadFilterNode,
+    private readonly direct: GainNode,
+    private readonly through: GainNode
+  ) {
+    this.top = ctx.sampleRate * OPEN_ABOVE
+    filter.frequency.value = this.top
+    direct.gain.value = 1
+    through.gain.value = 0
+  }
 
   set(target: number, how: How): void {
-    const hz = Math.min(this.full, target)
+    const hz = Math.min(this.top, target)
+    const open = hz >= this.top
     const t = this.ctx.currentTime
-    const f = this.node.frequency
-    if (how === 'now' || how === 'fade' || this.hz < 0) {
-      f.cancelScheduledValues(t)
-      f.setValueAtTime(hz, t)
-    } else {
+    const now = how === 'now' || how === 'fade' || this.hz < 0
+    if (!now) {
       if (Math.abs(Math.log(hz / this.hz)) < 0.05) return
       if (how === 'glide' && t - this.at < WRITE_EVERY) return
-      // Прошлый доезд к полной полосе мог оставить точную запись впереди: она
-      // больше не нужна, иначе фильтр прыгнет в полную полосу посреди нового пути.
-      f.cancelScheduledValues(t)
-      f.setTargetAtTime(hz, t, SHADE.tau)
-      if (hz === this.full) f.setValueAtTime(hz, t + SHADE.tau * SNAP)
     }
+    const put = (p: AudioParam, v: number) => (now ? p.setValueAtTime(v, t) : p.setTargetAtTime(v, t, SHADE.tau))
+    put(this.filter.frequency, hz)
+    put(this.direct.gain, open ? 1 : 0)
+    put(this.through.gain, open ? 0 : 1)
     this.hz = hz
     this.at = t
   }
@@ -71,20 +74,22 @@ class Cutoff {
 
 /** Источник за преградой: голос подключается к `input`. */
 export class Shaded {
-  readonly input: BiquadFilterNode
+  readonly input: GainNode
   readonly spot: Spot
-  private readonly cut: Cutoff
+  private readonly band: Band
 
   constructor(mix: Bus, o: { out?: AudioNode; wet?: number; stereo?: boolean } = {}) {
     const ctx = mix.ctx
-    const full = fullBand(ctx)
-    this.input = ctx.createBiquadFilter()
-    this.input.type = 'lowpass'
-    this.input.Q.value = qOf('lowpass', Math.SQRT1_2)
-    this.input.frequency.value = full
+    this.input = ctx.createGain()
     this.spot = new Spot(mix, o)
-    this.input.connect(this.spot.input)
-    this.cut = new Cutoff(ctx, this.input, full)
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.Q.value = qOf('lowpass', Math.SQRT1_2)
+    const direct = ctx.createGain()
+    const through = ctx.createGain()
+    this.input.connect(direct).connect(this.spot.input)
+    this.input.connect(filter).connect(through).connect(this.spot.input)
+    this.band = new Band(ctx, filter, direct, through)
   }
 
   /**
@@ -92,7 +97,7 @@ export class Shaded {
    * уровень задаёт сам голос), `spread` - насколько панорама идёт за местом.
    */
   set(h: Heard, ear: Ear, how: How, gain = 1, spread = 1): void {
-    this.cut.set(h.cutoff, how)
+    this.band.set(h.cutoff, how)
     this.spot.set(gain * h.gain, panOf(ear, h.at) * spread, how)
   }
 }

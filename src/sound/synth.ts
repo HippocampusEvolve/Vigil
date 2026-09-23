@@ -46,6 +46,7 @@ import { db } from './dsp'
 import { LEVEL, SEND } from './levels'
 import type { Bus } from './mixer'
 import { distance, falloff, panOf, qOf, Spot, type Ear, type Point } from './place'
+import { STEEL } from './strike'
 
 const rand = (a: number, b: number): number => a + (b - a) * Math.random()
 
@@ -226,7 +227,8 @@ export function createSynth(mix: Bus, bank: Bank, earOf: () => Ear, opts: { wet?
     }
     const s = ctx.createBufferSource()
     s.buffer = set[Math.floor(Math.random() * set.length)]
-    s.playbackRate.value = running ? rand(1, 1.08) : rand(0.95, 1.03)
+    const [lo, hi] = running ? STEEL.run : STEEL.walk
+    s.playbackRate.value = rand(lo, hi)
     s.connect(out)
     s.start(t)
   }

@@ -15,7 +15,9 @@
  *                    молчит) и у фитоламп - выше и тоньше. Гул идёт за светом
  *                    (`light`): дуга гаснет - дроссель замолкает. Провал света
  *                    ниже половины и возврат - щелчок стартёра и «тинк»
- *                    зажигания. У мигающих трубок ещё и зуд стартёра.
+ *                    зажигания. У мигающих трубок ещё и зуд стартёра. Ровный
+ *                    гул в свёртку не посылается (`SEND.tone`), как и гул
+ *                    пульта и машин холодной.
  *   ГЕНЕРАТОР        «Дед» в генераторной; за дверью и стеной - глухо.
  *   ЧАСЫ             над проёмом в пост; тик-так раз в секунду.
  *   ПРИЁМНИК         шипение с гуляющим центром 500-4000 Гц, редкие свисты
@@ -39,7 +41,7 @@ import type { Bank } from './bank'
 import { db, LOOP_RMS } from './dsp'
 import { hear, type Hearing, type Source } from './hear'
 import type { Inside } from './inside'
-import { LEVEL } from './levels'
+import { LEVEL, SEND } from './levels'
 import { HUM_SECONDS } from './machines'
 import type { Mixer } from './mixer'
 import { gain, loop, stereoLoop, type Layer, type Weather } from './outdoor'
@@ -193,7 +195,7 @@ function tube(f: Fixture, rig: Rig): Layer | null {
   const buzzing = dying ? bank.buffer(ctx, 'starter') : null
   if (!buf || (dying && !buzzing)) return null
   const lv = phyto ? LEVEL.phyto : LEVEL.tube
-  const sh = new Shaded(mix)
+  const sh = new Shaded(mix, { wet: SEND.tone })
   // Своя расстройка на пару центов и своя медленная дрожь высоты и громкости.
   const src = loop(ctx, buf, Math.random() * HUM_SECONDS, 1 + (Math.random() * 2 - 1) * 0.0015)
   const pitch = ctx.createOscillator()
@@ -370,7 +372,7 @@ function consoleHum(rig: Rig): Layer | null {
   const ctx = mix.ctx
   const hum = bank.buffer(ctx, 'hum')
   if (!hum) return null
-  const sh = new Shaded(mix)
+  const sh = new Shaded(mix, { wet: SEND.tone })
   loop(ctx, hum, Math.random() * HUM_SECONDS, 1.0007)
     .connect(gain(ctx, db(LEVEL.console.db) / LOOP_RMS))
     .connect(sh.input)
@@ -418,7 +420,7 @@ function cold(rig: Rig): Layer | null {
   const hum = bank.buffer(ctx, 'hum')
   const brown = bank.buffer(ctx, 'brown')
   if (!hum || !brown) return null
-  const sh = new Shaded(mix)
+  const sh = new Shaded(mix, { wet: SEND.tone })
   const lv = db(LEVEL.cold.db)
   // Компрессор: тот же гул дросселя октавой ниже - 50 Гц с гармониками.
   loop(ctx, hum, Math.random() * HUM_SECONDS, 0.5).connect(gain(ctx, (lv * 0.8) / LOOP_RMS)).connect(sh.input)

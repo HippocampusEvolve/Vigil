@@ -235,12 +235,21 @@ export function renderSlam(rate: number, voice: DoorVoice, seed = Math.random() 
 
 // --- Шаг по маршу ------------------------------------------------------------------------
 
-/** Моды проступи марша: [Гц, сила, спад до -60 дБ, с]. */
-const STEEL_MODES: ReadonlyArray<readonly [number, number, number]> = [
-  [870, 0.5, 0.14],
-  [1410, 0.35, 0.11],
-  [2260, 0.22, 0.08],
-]
+/**
+ * Шаг по маршу: моды проступи [Гц, сила, спад до -60 дБ, с], разброс спада и
+ * скорость, с которой играется посчитанный шаг (шагом и бегом). Спад каждой
+ * моды при любом разбросе и скорости остаётся в 60-150 мс, как в рецепте.
+ */
+export const STEEL = {
+  modes: [
+    [870, 0.5, 0.125],
+    [1410, 0.35, 0.1],
+    [2260, 0.22, 0.08],
+  ],
+  spread: [0.85, 1.1],
+  walk: [0.95, 1.03],
+  run: [1, 1.08],
+} as const
 
 /**
  * Шаг по стальному маршу: щелчок, три моды проступи и дребезг. Набор из
@@ -253,7 +262,7 @@ export function* bakeSteel(rate: number, count = 8, seed = 83): Generator<void, 
     const d = new Float32Array(Math.round(0.3 * rate))
     const t0 = Math.round(0.002 * rate)
     addGrain(d, t0, rate, r, { freq: 3000, q: 0.7, attack: 0.0003, decay: 0.003, amp: 0.8 })
-    const modes = STEEL_MODES.map(([f, amp, t60]) => ({ freq: f * between(r, 0.92, 1.08), t60: t60 * between(r, 0.85, 1.1), amp }))
+    const modes = STEEL.modes.map(([f, amp, t60]) => ({ freq: f * between(r, 0.92, 1.08), t60: t60 * between(r, STEEL.spread[0], STEEL.spread[1]), amp }))
     for (const m of modes) ringInto(d, t0, rate, { ...m, phase: r() })
     // Нога: глухо и коротко, сталь под ней не звенит басом.
     ringInto(d, t0, rate, { freq: between(r, 100, 130), t60: 0.05, amp: 0.3 })
@@ -284,7 +293,8 @@ export const GROAN = {
   ratios: [1, 1.37, 1.93, 2.61, 3.28],
   spread: 0.02,
   drift: 0.02,
-  t60: [2, 5],
+  /** Спад, с: 2-5 с и после скорости проигрывания (`play`). */
+  t60: [2.1, 4.8],
   top: 190,
   play: [0.97, 1.03],
   rate: 8000,

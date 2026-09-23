@@ -38,7 +38,7 @@ import { BLOCK, CANOPY, CLEARING, ENTRY_LAMP, GUTTER, HANGAR, PLINTH, STREAM } f
 import type { Bank } from './bank'
 import { db, LOOP_RMS, rng } from './dsp'
 import type { Hearing } from './hear'
-import { LEVEL } from './levels'
+import { LEVEL, SEND } from './levels'
 import { HUM } from './machines'
 import type { Bus } from './mixer'
 import { alongX, alongZ, distance, falloff, nearestInRect, panOf, Spot, type Ear, type How, type Point } from './place'
@@ -219,7 +219,7 @@ function gutter(mix: Bus, bank: Bank, weather: Weather): Layer | null {
 /** Гармоники гула лампы - те же, что у трубок нутра (`machines.ts`). */
 function lamp(mix: Bus): Layer {
   const ctx = mix.ctx
-  const spot = new Spot(mix)
+  const spot = new Spot(mix, { wet: SEND.tone })
   const sum = gain(ctx, 0.5)
   for (const [k, a] of HUM) {
     const osc = ctx.createOscillator()
