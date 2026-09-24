@@ -557,7 +557,7 @@ async function boot(): Promise<void> {
       const was = mesh.material
       mesh.material = m
       const t = performance.now()
-      compileNow(mesh)
+      await compileQuiet(mesh)
       note(`${name} с нутром`, t)
       mesh.material = was
       await yieldTask()
