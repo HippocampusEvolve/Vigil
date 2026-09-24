@@ -52,8 +52,10 @@ import { buildCollision, type Collision } from './world/collision'
 import { groundUnder, heightAt, waterDepth } from './world/terrain'
 import { EYE_LOW, FLASHLIGHT_REST, FOCUS_FOV, HATCH, FLOOR, DOOR } from './world/layout'
 import { installIndoorChunks } from './world/indoor'
-import { furnishMaterials } from './world/furnish'
-import { buildInsideSteps, type Inside } from './world/inside'
+// Нутро с каталогом предметов - отдельный кусок сборки (`buildInside`): здесь
+// только его тип и материалы предметов для прогрева.
+import { furnishMaterials } from './world/furnish-materials'
+import type { Inside } from './world/inside'
 import { postMaterials } from './world/post'
 import { zoneAt } from './world/zones'
 import { createWeather, type Weather } from './weather'
@@ -561,8 +563,14 @@ async function boot(): Promise<void> {
   // --- Вторая волна: нутро --------------------------------------------------
   // Собирается после первого кадра порциями, пока игрок идёт к посту: до
   // двери ему не меньше двух минут (tech.md, «Порядок загрузки»).
+  // Код нутра - каталог предметов ядра, опись и комнаты - едет отдельным
+  // куском сборки и только теперь: это треть бандла мира, и в критическом
+  // пути входа он стоил сотню миллисекунд сети холодному заходу и задачу
+  // разбора тёплому (замер 24.09.2026). Service worker кладёт кусок в кэш
+  // оболочки вместе с остальными (vite.config.js), так что без сети он есть.
   async function buildInside(): Promise<void> {
     const t0 = performance.now()
+    const { buildInsideSteps } = await import('./world/inside')
     // Материалы с нутром (`inMats`, собраны в прогреве): фасад и створки
     // переходят на них - снаружи поверхность та же.
     const steps = buildInsideSteps(inMats, world.lights.glow)
@@ -773,7 +781,7 @@ async function boot(): Promise<void> {
   tryUnveil()
   // Вторая волна - после первого кадра и открытого экрана входа.
   await yieldTask()
-  void buildInside()
+  buildInside().catch((e: unknown) => console.warn('[vigil] нутро не собралось:', e))
 }
 
 void boot()
