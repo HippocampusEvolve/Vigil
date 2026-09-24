@@ -85,7 +85,14 @@ export function createMixer(ctx: BaseAudioContext, opts: { limit?: boolean } = {
 
   const master = gain(1)
   const world = gain(1)
-  world.connect(master)
+  const plainGain = gain(1)
+  world.connect(plainGain).connect(master)
+  // The world passes through a sleeve filter when headphones are worn.
+  const sleeve = ctx.createBiquadFilter()
+  sleeve.type = 'lowpass'
+  sleeve.frequency.value = 20000
+  const sleeveGain = gain(0)
+  world.connect(sleeve).connect(sleeveGain).connect(master)
 
   const dry = gain(1)
   dry.connect(world)
@@ -177,6 +184,12 @@ export function createMixer(ctx: BaseAudioContext, opts: { limit?: boolean } = {
     sfx,
     director,
     phones,
+    setHeadphones(on: boolean): void {
+      const t = ctx.currentTime
+      sleeve.frequency.setTargetAtTime(on ? 600 : 20000, t, 0.12)
+      plainGain.gain.setTargetAtTime(on ? 0 : 1, t, 0.12)
+      sleeveGain.gain.setTargetAtTime(on ? db(-12) : 0, t, 0.12)
+    },
     setSpace,
     setImpulse,
   }

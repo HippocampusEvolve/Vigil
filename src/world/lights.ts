@@ -125,6 +125,8 @@ export type LightState = {
   doors: Partial<Record<string, number>>
   /** Ток от генератора: без него гаснут трубки (темнота - этап сценария). */
   mains: boolean
+  /** Краткий внешний спад отдельного светильника. */
+  gain?: Partial<Record<FixtureId, number>>
 }
 
 type Slot = { fixture: FixtureId | null; fade: number; intensity: number; pos: THREE.Vector3 }
@@ -173,6 +175,7 @@ export function createLights(opts: { entry: THREE.SpotLight; flash: THREE.SpotLi
     FIXTURES.forEach((f, i) => {
       let p = f.behavior === 'dead' ? 0 : powerAt(dips.get(f.id)!, clock)
       if (f.mains && !s.mains) p = 0
+      p *= s.gain?.[f.id] ?? 1
       power[f.id] = p
       glow.value[i] = p
     })

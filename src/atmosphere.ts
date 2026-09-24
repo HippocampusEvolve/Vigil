@@ -268,6 +268,7 @@ export function createAtmosphere(
   const passA = new EffectPass(camera, bloom, exposure, tone, grade)
   composer.addPass(passA)
   const finish = new FinishEffect()
+  let tension = 0.25
   const passB = new EffectPass(camera, new FXAAEffect(), finish)
   composer.addPass(passB)
 
@@ -347,6 +348,11 @@ export function createAtmosphere(
     hemi,
     setVeil,
     setLight,
+    setTension(v: number): void {
+      tension = Math.max(0, Math.min(1, v))
+      finish.uniforms.get('vignetteDarkness')!.value = SETTINGS.vignette + tension * 0.18
+      finish.uniforms.get('grain')!.value = SETTINGS.grain + tension * 0.025
+    },
     /** Где игрок: 1 - внутри поста, `lowerLevel` 1 - внизу. Туман перетекает плавно. */
     setInterior(insideLevel: number, lowerLevel: number): void {
       insideTarget = insideLevel

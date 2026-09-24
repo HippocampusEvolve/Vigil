@@ -5,6 +5,7 @@
 
 Мир 03 витрины [find-the-end.fun](https://find-the-end.fun) - небольших
 браузерных миров, в каждом из которых спрятан свой конец.
+[Открыть Vigil](https://find-the-end.fun/vigil/).
 
 ## Стек
 

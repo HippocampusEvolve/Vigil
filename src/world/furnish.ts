@@ -163,6 +163,8 @@ export type Item = {
   parts?: Palette
   /** Подвижные детали этот этап не двигает: слить их с неподвижным. */
   still?: boolean
+  /** Whole item stays separate so an action can move or hide it. */
+  loose?: boolean
   /** Положение подвижных частей при сборке, рад: по имени части (`turn` ядра). */
   pose?: Record<string, number>
 }
@@ -385,7 +387,7 @@ export function* furnishSteps(
     if (!batch) batches.set(room, (batch = { opaque: [], glass: [], glow: [] }))
 
     // Рамка - до слияния, пока все детали на месте.
-    if (item.solid && bb.min.y < ROOMS[room].floor + REACH) solid.push(box(bb.min.x, bb.max.x, bb.min.y, bb.max.y, bb.min.z, bb.max.z))
+    if (item.solid && !item.loose && bb.min.y < ROOMS[room].floor + REACH) solid.push(box(bb.min.x, bb.max.x, bb.min.y, bb.max.y, bb.min.z, bb.max.z))
 
     // Детали: каждая - к ближней подвижной группе или в слияние комнаты.
     const meshes: THREE.Mesh[] = []
@@ -397,7 +399,7 @@ export function* furnishSteps(
     const inverse = new THREE.Matrix4()
     const rel = new THREE.Matrix4()
     for (const mesh of meshes) {
-      let root: THREE.Object3D | null = null
+      let root: THREE.Object3D | null = item.loose ? g : null
       if (!item.still) for (let q = mesh.parent; q && q !== g; q = q.parent) if (q.userData.moving) {
         root = q
         break
@@ -418,7 +420,7 @@ export function* furnishSteps(
 
     // Подвижная группа: её детали - один-три меша на её осях.
     for (const [root, own] of roots) {
-      const name = root.userData.moving as string
+      const name = item.loose ? 'whole' : root.userData.moving as string
       const key = moving.has(`${item.name}/${name}`) ? `${item.name}/${root.name}` : `${item.name}/${name}`
       moving.set(key, root)
       for (const k of ['opaque', 'glass', 'glow'] as Kind3[]) {

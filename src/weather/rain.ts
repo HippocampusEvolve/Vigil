@@ -513,6 +513,7 @@ export function createRain(count: number) {
     /** Сила дождя 0..1: доля живых струй и всплесков. */
     setIntensity(v: number): void {
       intensity = Math.min(1, Math.max(0, v))
+      group.visible = intensity > 0.001
       ;(rain.material as THREE.ShaderMaterial).uniforms.uIntensity.value = intensity
     },
     /** Сколько струй рисовать: для телефона и для сбережения кадра. */

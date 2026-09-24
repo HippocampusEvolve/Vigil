@@ -272,6 +272,22 @@ export function createSynth(mix: Bus, bank: Bank, earOf: () => Ear, opts: { wet?
     if (wet > 0) squelch(s.input, t, wet)
   }
 
+  /** Recorded footfall: the same synthesis as a live step, heard from a fixed microphone. */
+  function tapeStep(surface: Surface, x: number, z: number, running: boolean, micX: number, micZ: number): void {
+    const t = ctx.currentTime + 0.005
+    const d = Math.hypot(x - micX, z - micZ)
+    const g = ctx.createGain()
+    g.gain.value = db(LEVEL.step) * Math.min(1, 2 / Math.max(2, d))
+    const cut = ctx.createBiquadFilter()
+    cut.type = 'lowpass'
+    cut.frequency.value = 8000 - 6500 * Math.min(1, d / 25)
+    g.connect(cut).connect((mix as Bus & { phones?: AudioNode }).phones ?? mix.sfx)
+    if (surface === 'mud') mud(g, t, running)
+    else if (surface === 'steel') steel(g, t, running)
+    else concrete(g, t)
+    if (surface === 'water') splash(g, t + 0.004, running ? 1.2 : 1)
+  }
+
   // --- Гром ----------------------------------------------------------------------
 
   /** Раскат: горбы громкости, срез ползёт вниз. */
@@ -431,6 +447,7 @@ export function createSynth(mix: Bus, bank: Bank, earOf: () => Ear, opts: { wet?
 
   return {
     step,
+    tapeStep,
     splash: (p: Point, gain = 1) => splash(spot(p, db(LEVEL.step), 1.8).input, ctx.currentTime + 0.005, gain),
     thunder,
     bird,

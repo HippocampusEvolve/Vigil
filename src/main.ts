@@ -47,10 +47,21 @@ import { createSupport, STEP_UP, type Surface } from './support'
 import { createTouch, touchForced, touchSupported, type Touch } from './touch'
 import { BODY, LOOK } from './player'
 import { layer } from './layer'
+import { Actions } from './actions/state'
+import { StepTrack } from './actions/tape'
+import type { createInteractions } from './actions'
+import { Scenario, type Script, type Fired } from './scenario/engine'
+import { TensionDirector } from './scenario/director'
+import { FlagJournal } from './scenario/journal'
+import { encode, BeaconClock } from './reveal/morse'
+import { clearState } from './reveal/transition'
+import { afterEnding, dayNumber, loadVisit, returnMode } from './reveal/visit'
+import { createFarField, createFarLight, type RevealWorld } from './reveal/visual'
+import { LAMP } from './world/shared'
 import { buildWorldSteps, type World } from './world'
 import { buildCollision, type Collision } from './world/collision'
 import { groundUnder, heightAt, waterDepth } from './world/terrain'
-import { EYE_LOW, FLASHLIGHT_REST, FOCUS_FOV, HATCH, FLOOR, DOOR } from './world/layout'
+import { EYE_LOW, FLASHLIGHT_REST, FOCUS_FOV, HATCH, FLOOR, DOOR, PORTHOLE, CANOPY } from './world/layout'
 import { installIndoorChunks } from './world/indoor'
 // Нутро с каталогом предметов - отдельный кусок сборки (`buildInside`): здесь
 // только его тип и материалы предметов для прогрева.
@@ -206,7 +217,58 @@ async function boot(): Promise<void> {
   const look = new SmoothLook(camera, renderer.domElement, { breath: LOOK.breath })
   look.setYaw(world.yaw, world.pitch)
   // Ввод: клавиши, мышь и палец сводятся в одно намерение.
-  const input = new Input({ look, target: renderer.domElement })
+  const actions = new Actions(layer.present)
+  const steps = new StepTrack()
+  const script = layer.get<Script>('script')
+  const revealData = layer.get<RevealWorld & { returnText?: { arrival?: string; clear?: string } }>('world')
+  if (script && revealData?.reveal?.radius && revealData.reveal.length)
+    atmosphere.sky.setShape(revealData.reveal.radius, revealData.reveal.length)
+  const storage = script ? (() => { try { return localStorage } catch { return null } })() : null
+  const visit = loadVisit(storage)
+  const visitMode = returnMode(visit.state)
+  const epilogue = visitMode === 'epilogue'
+  const storyActive = !!script && !epilogue
+  const today = dayNumber(revealData?.releaseDate ?? null, revealData?.baseDay ?? 11312)
+  const previousDay = dayNumber(revealData?.releaseDate ?? null, revealData?.baseDay ?? 11312, visit.state.endedAt)
+  const formatReturn = (value: string | undefined, day: number) => value?.replace('{day}', String(day)) ?? ''
+  const journalLines = (): string[] => {
+    const lines: string[] = []
+    for (const arrival of visit.state.arrivals.slice(-3)) lines.push(formatReturn(revealData?.returnText?.arrival, dayNumber(revealData?.releaseDate ?? null, revealData?.baseDay ?? 11312, arrival)))
+    if (epilogue) lines.push(formatReturn(revealData?.returnText?.clear, previousDay))
+    return lines.filter(Boolean)
+  }
+  const flagJournal = new FlagJournal(`vigil:flags:${visit.state.visits + 1}`, storage, storyActive)
+  const savedFlags = storyActive && script ? Object.entries(script.flags).filter(([, number]) => flagJournal.has(number)).map(([name]) => name) : []
+  if (visitMode === 'resume') {
+    const remembered = visit.state.actions
+    actions.flashlight = !!remembered.flashlight
+    actions.door = !!remembered.door
+    // An interrupted recording restarts on the next listen, using the generic route.
+    actions.tapePlayed = !!remembered.tapeFinished
+    actions.tapeFinished = !!remembered.tapeFinished
+    actions.fuel = !!remembered.fuel
+    actions.pulls = Number(remembered.pulls) || 0
+    actions.crate = Number(remembered.crate) || 0
+    actions.wheel = !!remembered.wheel
+    actions.tarp = !!remembered.tarp
+    actions.automatic = !!remembered.automatic
+    actions.lamp = remembered.lamp !== false
+  }
+  if (savedFlags.includes('flashlight')) actions.flashlight = true
+  if (savedFlags.includes('door_open')) actions.door = true
+  if (savedFlags.includes('tape_heard')) { actions.tapePlayed = true; actions.tapeFinished = true }
+  if (savedFlags.includes('power_back')) { actions.fuel = true; actions.pulls = 3 }
+  if (savedFlags.includes('stars_seen')) { actions.crate = 3; actions.wheel = true }
+  if (savedFlags.includes('storm_off')) { actions.tarp = true; actions.automatic = true }
+  const director = new TensionDirector()
+  let scenario!: Scenario
+  let interactions: ReturnType<typeof createInteractions> | null = null
+  const input = new Input({
+    look,
+    target: renderer.domElement,
+    onAction: () => interactions?.act(),
+    onTool: (slot, down) => { if (slot === 1 && down) interactions?.act() },
+  })
 
   // Нутро приходит второй волной, своим деревом коллизий: до него тело знает
   // только поляну и фасад, и входная дверь заперта.
@@ -227,13 +289,27 @@ async function boot(): Promise<void> {
       obstacles: () => {
         const list = world.doors.obstacles()
         if (hatchOpen && inside) for (const p of inside.interior.hatchPosts) list.push({ ax: p.x, az: p.z, bx: p.x, bz: p.z, half: p.half, y0: p.y0, y1: p.y1 })
+        // The crate is moved by hand, so it cannot be baked into the static octree.
+        if (inside && player.pos.y < -1.5) {
+          const crate = inside.furnish.placed.get('crate')?.group
+          if (crate) {
+            const b = new THREE.Box3().setFromObject(crate)
+            for (const [ax, az, bx, bz] of [
+              [b.min.x, b.min.z, b.max.x, b.min.z], [b.max.x, b.min.z, b.max.x, b.max.z],
+              [b.max.x, b.max.z, b.min.x, b.max.z], [b.min.x, b.max.z, b.min.x, b.min.z],
+            ]) list.push({ ax, az, bx, bz, half: 0.025, y0: b.min.y, y1: b.max.y })
+          }
+        }
         return list
       },
       // Закрытая крышка люка - пол; открытая - проём к лестнице.
       deck: (x, z) => (!hatchOpen && x > HATCH.x0 && x < HATCH.x1 && z > HATCH.z0 && z < HATCH.z1 ? FLOOR.y : null),
     }),
     // Шаг звучит по поверхности под ногой: грязь, бетон отмостки, лужа.
-    onStep: (x, z, _dir, _side, running, surface) => ambient.step(surface as Surface, x, z, running),
+    onStep: (x, z, _dir, _side, running, surface) => {
+      ambient.step(surface as Surface, x, z, running)
+      if (!actions.door) steps.record(performance.now() / 1000, x, z, surface as Surface, running)
+    },
     spawn: world.spawn,
     eye: BODY.eye,
     height: BODY.height,
@@ -247,6 +323,11 @@ async function boot(): Promise<void> {
     stepUp: STEP_UP,
     bounds: null, // край поляны держит лес, а не квадрат ядра
   })
+  if (visitMode === 'resume' && visit.state.position) {
+    player.pos.set(...visit.state.position)
+    player.syncCamera()
+    look.setYaw(visit.state.yaw, visit.state.pitch)
+  }
 
   /** Перенести тело, не гоняя его туда физикой. */
   function teleport(x: number, y: number, z: number): void {
@@ -266,23 +347,23 @@ async function boot(): Promise<void> {
     setVeil: atmosphere.setVeil,
     setLight: atmosphere.setLight,
     look,
-    yaw: world.yaw,
-    pitch: world.pitch,
-    eye: { from: EYE_LOW, to: player.eye },
+    yaw: visitMode === 'resume' ? visit.state.yaw : world.yaw,
+    pitch: visitMode === 'resume' ? visit.state.pitch : world.pitch,
+    eye: { from: visitMode === 'resume' || epilogue ? player.eye : EYE_LOW, to: player.eye },
     // Цикл тело не зовёт, пока идёт пробуждение, поэтому и камеру по высоте
     // ставим сами: над ступнями, на текущую высоту глаза.
     setEye: (h) => {
       camera.position.y = player.pos.y + h
     },
     setSound: (level) => ambient.setWake(level),
-    fov: { from: BODY.fov, to: FOCUS_FOV },
+    fov: { from: BODY.fov, to: visitMode === 'resume' || epilogue ? BODY.fov : FOCUS_FOV },
     setFov: (deg) => {
       camera.fov = deg
       camera.updateProjectionMatrix()
     },
     // Пустить в мир можно только по готовому дереву коллизий: без него первый
     // же шаг прошёл бы сквозь стену.
-    ready: () => collision.ready(),
+    ready: () => collision.ready() && (visitMode !== 'resume' || !!insideTree?.ready()),
   })
 
   // --- Управление пальцем -----------------------------------------------------------
@@ -595,11 +676,23 @@ async function boot(): Promise<void> {
       if (spent > stepMax) [stepMax, stepName] = [spent, r.value]
       await yieldTask()
     }
+    // Include the live display and paper in the same one-material-at-a-time
+    // shader warmup as the rest of the interior.
+    interactions?.setInside(built)
+    interactions?.restore()
+    const aperture = built.furnish.placed.get('porthole')
+    if (aperture && farField) {
+      const glass = aperture.made.glass as THREE.Vector3
+      farField.show(aperture.group.localToWorld(glass.clone()))
+      await compileQuiet(farField.mesh)
+      await yieldTask()
+    }
     // Свои программы у нутра - только у предметов: по одной на задачу.
     const seen = new Set<string>()
     const mats: THREE.Object3D[] = []
     built.group.traverse((o) => {
       const m = (o as THREE.Mesh).material as THREE.Material | undefined
+      if (o.name === 'console-live-screen') return // uses the shared glow material warmed with the outdoor scene
       if (!(o as THREE.Mesh).isMesh || !m || seen.has(m.uuid)) return
       seen.add(m.uuid)
       mats.push(o)
@@ -636,25 +729,25 @@ async function boot(): Promise<void> {
     Object.assign(debug, { inside, insideTree })
   }
 
-  // Двери этапа нутра. Кто их открывает по сценарию - этапы рук и сценария;
-  // пока сценария нет, внутренние стоят открытыми, а входная открывается
-  // перед тем, кто подошёл к ней вплотную, и закрывается доводчиком за ушедшим.
+  // Interior doors stay ajar; the entrance waits for the intercom action.
   world.doors.prop('inner', 0.95)
   world.doors.prop('med', 0.9)
   world.doors.prop('gen', 0.85)
   const doorX = (DOOR.x0 + DOOR.x1) / 2
   let entryUnlocked = false
+  let entryReleased = epilogue || savedFlags.includes('door_open')
+  let nearEntry = false
   let awayFor = 0
   const DOOR_IDS = ['entry', 'inner', 'med', 'gen', 'cold'] as const
   function doorsTick(dt: number): void {
     const ready = insideTree?.ready() ?? false
     const d = Math.hypot(player.pos.x - doorX, (player.pos.z - -0.15) * 1.2)
-    if (ready && d < 1.6) {
+    if (ready && entryReleased && d < 2.4) {
       if (!entryUnlocked) {
         world.doors.unlock('entry')
         entryUnlocked = true
       }
-      world.doors.move('entry', 1, 1.3)
+      world.doors.move('entry', d < 1.6 ? 1 : 0.1, 1.3)
       awayFor = 0
     } else if (world.doors.open('entry') > 0) {
       awayFor += dt
@@ -666,14 +759,13 @@ async function boot(): Promise<void> {
     ambient.setDoor('hatch', hatchOpen ? 1 : 0)
   }
 
-  /** Поднять фонарь: пока рук нет, он поднимается, когда игрок подошёл вплотную. */
+  /** Beam follows only after the explicit pick action. */
   function flashlightTick(dt: number): void {
     const fl = world.flashlight
-    if (!fl.carried && Math.hypot(player.pos.x - FLASHLIGHT_REST.x, player.pos.z - FLASHLIGHT_REST.z) < 0.9) fl.pick()
     fl.follow(dt, camera, player.bobT)
   }
 
-  const lightState = { x: 0, y: 0, z: 0, carried: false, doors: {} as Record<string, number>, mains: true }
+  const lightState = { x: 0, y: 0, z: 0, carried: false, doors: {} as Record<string, number>, mains: true, gain: { F: 1 } }
   function lightsTick(dt: number): void {
     lightState.x = camera.position.x
     lightState.y = camera.position.y
@@ -688,9 +780,7 @@ async function boot(): Promise<void> {
     atmosphere.setInterior(z === 'out' ? 0 : 1, z === 'I' || z === 'J' ? 1 : 0)
   }
 
-  Object.assign(debug, {
-    /** Открыть люк для проверки: без сюжета он заперт (tech.md, «Загрузчик»). */
-    openHatch: () => {
+  function openHatch(): void {
       hatchOpen = true
       if (inside) inside.hatchRail.visible = true
       const f = inside?.furnish.moving
@@ -698,10 +788,115 @@ async function boot(): Promise<void> {
         const leaf = f?.get(`hatch/${side}`)
         if (leaf) leaf.rotation.z = (side === 'leaf-left' ? 1 : -1) * 1.72
       }
-    },
+  }
+  Object.assign(debug, {
+    openHatch,
     census: () => world.lights.census(),
     zone: () => zoneAt(camera.position.x, camera.position.y, camera.position.z),
   })
+
+  let previousZone = 'out'
+  let lampWasOff = false
+  let signalEnabled = epilogue || savedFlags.includes('storm_off')
+  let hintFlashUntil = 0
+  let hintLampUntil = 0
+  const windowFigure = script ? new THREE.Group() : null
+  if (windowFigure) {
+    const ink = new THREE.MeshBasicMaterial({ color: 0x07120d, fog: false })
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.105, 8, 6), ink)
+    head.position.y = 0.12
+    const shoulders = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), ink)
+    shoulders.scale.y = 0.8
+    shoulders.position.y = -0.15
+    windowFigure.add(head, shoulders)
+    windowFigure.position.set(doorX, (DOOR.window.y0 + DOOR.window.y1) / 2, 0.04)
+    windowFigure.visible = false
+    scene.add(windowFigure)
+  }
+  const farField = script ? createFarField(scene, revealData?.reveal?.period ?? 80) : null
+  const farLight = script ? createFarLight(scene, revealData?.reveal?.farPost?.elevationDeg, revealData?.reveal?.farPost?.azimuthDeg) : null
+  const beacon = revealData?.morse?.call && revealData.morse.answer
+    ? new BeaconClock(encode(revealData.morse.call, revealData.morse.farLightUnit ?? 0.35), encode(revealData.morse.answer, revealData.morse.farLightUnit ?? 0.35))
+    : null
+  let clearElapsed = signalEnabled ? (epilogue ? 40 : visitMode === 'resume' ? Math.max(0, Math.min(40, visit.state.weatherSeconds)) : 40) : -1
+  if (signalEnabled) weather.lightning.setEnabled(false)
+  if (epilogue || savedFlags.includes('contact')) beacon?.steady()
+  else if (signalEnabled) beacon?.setCall()
+  if (actions.flashlight) world.flashlight.pick()
+  if (savedFlags.includes('blackout') && !savedFlags.includes('power_back')) lightState.mains = false
+  if (savedFlags.includes('hatch_open')) openHatch()
+  if (epilogue) { actions.door = true; actions.automatic = true; actions.lamp = true }
+  const endingCover = script ? document.createElement('div') : null
+  if (endingCover) {
+    endingCover.style.cssText = 'position:fixed;inset:0;z-index:9;background:#030706;color:#d6d7be;display:grid;place-items:center;font:italic 23px/1.5 Georgia,serif;text-align:center;padding:8vw;opacity:0;pointer-events:none'
+    document.body.append(endingCover)
+  }
+  const writingCard = script ? document.createElement('div') : null
+  if (writingCard) {
+    writingCard.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%) rotate(-1deg);z-index:10;width:min(76vw,480px);min-height:180px;padding:36px;background:#c9ba95;color:#343052;box-shadow:0 18px 70px #000c;font:italic 25px/1.5 Georgia,serif;display:none;pointer-events:none'
+    document.body.append(writingCard)
+  }
+  let ending: { kind: 'a' | 'b'; elapsed: number; line: string; fromYaw: number; fromPitch: number; toYaw: number; toPitch: number; buzzed: boolean } | null = null
+  function startEnding(kind: 'a' | 'b'): void {
+    if (ending) return
+    const chair = inside?.furnish.placed.get('chair-E')?.group.getWorldPosition(new THREE.Vector3())
+    const delta = chair?.sub(camera.position)
+    ending = { kind, elapsed: 0, line: kind === 'a' ? formatReturn(revealData?.returnText?.arrival, today) : '',
+      fromYaw: look.yaw, fromPitch: look.pitch,
+      toYaw: delta ? Math.atan2(-delta.x, -delta.z) : look.yaw,
+      toPitch: delta ? Math.atan2(delta.y, Math.hypot(delta.x, delta.z)) : look.pitch,
+      buzzed: false }
+    if (kind === 'a' && writingCard) writingCard.style.display = 'block'
+    if (kind === 'a') ambient.eventCue('pen')
+    visit.save(afterEnding(visit.state, kind))
+  }
+  function onScenario(fired: Fired): void {
+    for (const [kind, value] of fired.commands) {
+      switch (kind) {
+        case 'flag': if (typeof value === 'string' && script) flagJournal.put(script.flags[value]); break
+        case 'tension': director.set(Number(value)); break
+        case 'power': lightState.mains = value !== 'off'; break
+        case 'lock': if (value === 'entry:open') entryReleased = true; else if (value === 'hatch:open') openHatch(); break
+        case 'insects': if (value === 'cut') ambient.cutInsects(); break
+        case 'sound': if (typeof value === 'string') ambient.eventCue(value); break
+        case 'weather': if (value === 'clear') { clearElapsed = 0; signalEnabled = true; lampWasOff = false; weather.lightning.setEnabled(false) } break
+        case 'farLight':
+          if (value === 'call') beacon?.setCall()
+          else if (value === 'answer') beacon?.reply()
+          else if (value === 'steady') beacon?.steady()
+          break
+        case 'show': if (windowFigure) windowFigure.visible = true; break
+        case 'hide': if (windowFigure) windowFigure.visible = false; break
+        case 'hint':
+          if (value === 'flashlight') hintFlashUntil = performance.now() + 120
+          else if (value === 'lamp') hintLampUntil = performance.now() + 120
+          else if (typeof value === 'string') ambient.eventCue(value)
+          break
+        case 'ending': if (value === 'a' || value === 'b') startEnding(value); break
+      }
+    }
+  }
+  scenario = new Scenario(storyActive ? script : undefined, savedFlags, onScenario)
+  if (storyActive && script) flagJournal.onRestore((number) => {
+    const name = Object.keys(script.flags).find((key) => script.flags[key] === number)
+    if (!name) return
+    scenario.flags.add(name)
+    if (name === 'flashlight') { actions.flashlight = true; world.flashlight.pick(); interactions?.restore() }
+    if (name === 'door_open') { actions.door = true; entryReleased = true }
+    if (name === 'power_back') { actions.fuel = true; actions.pulls = 3; lightState.mains = true }
+    if (name === 'blackout' && !scenario.has('power_back')) lightState.mains = false
+    if (name === 'hatch_open') openHatch()
+    if (name === 'stars_seen') { actions.crate = 3; actions.wheel = true; interactions?.restore() }
+    if (name === 'storm_off') { actions.tarp = true; actions.automatic = true; clearElapsed = 40; signalEnabled = true; weather.lightning.setEnabled(false); beacon?.setCall() }
+    if (name === 'contact') beacon?.steady()
+  })
+  if (storyActive && visitMode !== 'resume') scenario.emit('start')
+  if (storyActive && visitMode === 'resume') {
+    if (savedFlags.includes('contact') && !savedFlags.includes('ending_b')) scenario.emit('farLight:answer:end')
+    else if (savedFlags.includes('power_back') && !savedFlags.includes('hatch_open')) scenario.emit('power:on')
+    else if (savedFlags.includes('tape_heard') && !savedFlags.includes('blackout')) scenario.emit('tape:end')
+  }
+  Object.assign(debug, { scenario, flagJournal, director, visit, farField, farLight, beacon })
 
   // --- Цикл -------------------------------------------------------------------
   const timer = new THREE.Timer()
@@ -714,6 +909,16 @@ async function boot(): Promise<void> {
   // убавляется ступенями. Назад не прибавляем: мигание качества хуже его нехватки.
   const FRAME_BUDGET = 1 / 45
   let slowFor = 0
+  let saveFor = 0
+  function rememberVisit(): void {
+    if (!storyActive || ending || awakening.holds()) return
+    visit.save({ ...visit.state, position: player.pos.toArray() as [number, number, number], yaw: look.yaw, pitch: look.pitch, weatherSeconds: Math.max(0, Math.min(40, clearElapsed)),
+      actions: { flashlight: actions.flashlight, door: actions.door, tapePlayed: actions.tapePlayed, tapeFinished: actions.tapeFinished,
+        fuel: actions.fuel, pulls: actions.pulls, crate: actions.crate, wheel: actions.wheel, tarp: actions.tarp,
+        automatic: actions.automatic, lamp: actions.lamp } })
+  }
+  addEventListener('pagehide', rememberVisit)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) rememberVisit() })
 
   function frame(frameAt: number): void {
     // Пока туман экрана входа сплошной, мира за ним не видно - рисовать его
@@ -742,17 +947,88 @@ async function boot(): Promise<void> {
     const wasAwake = !awakening.holds()
     awakening.update(dt)
     const awake = !awakening.holds()
-    if (wasAwake) {
+    const playing = awake && !document.body.classList.contains('paused') && !ending
+    if (wasAwake && !ending) {
       // Взгляд - ДО физики: идти игрок должен по свежему направлению.
       look.update(dt, player)
-      player.update(dt)
+      input.update(dt)
+      interactions?.update(dt, player.bobT, Math.abs(input.intent.move.x) + Math.abs(input.intent.move.y) > 0.2)
+      touch?.setAction(!!interactions?.target)
+      if (!actions.pose) player.update(dt)
       if (player.pos.y < FALL_RESET_Y) teleport(world.spawn.x, world.spawn.y, world.spawn.z)
       flashlightTick(dt)
     }
+    if (storyActive && playing) {
+      const zone = zoneAt(player.pos.x, player.pos.y + player.eye, player.pos.z)
+      if (zone !== previousZone) { previousZone = zone; scenario.emit(`zone:${zone}`) }
+      if (zone === 'B' && world.doors.open('inner') > 0.5) {
+        const windowPoint = new THREE.Vector3(doorX, (DOOR.window.y0 + DOOR.window.y1) / 2, 0)
+        const toWindow = windowPoint.sub(camera.position).normalize()
+        const facing = camera.getWorldDirection(earDir).dot(toWindow)
+        if (facing > Math.cos(Math.PI / 18)) scenario.emit('look:entry-window')
+      }
+      if (windowFigure?.visible) {
+        const toWindow = windowFigure.position.clone().sub(camera.position).normalize()
+        if (zone !== 'B' || camera.getWorldDirection(earDir).dot(toWindow) < Math.cos(Math.PI / 18)) windowFigure.visible = false
+      }
+      const d = Math.hypot(player.pos.x - doorX, (player.pos.z + 0.15) * 1.2)
+      if (d < 2.4 && !nearEntry) { nearEntry = true; scenario.emit('near:entry') }
+      if (d >= 3) nearEntry = false
+      scenario.update(dt)
+      const level = director.update(dt)
+      atmosphere.setTension(level)
+      ambient.setTension(level)
+      world.flashlight.setPower(frameAt < hintFlashUntil ? 0.5 : 1 - director.flicker * (Math.sin(frameAt * 0.031) > 0.996 ? 0.75 : 0))
+      const lampLevel = actions.lamp ? (frameAt < hintLampUntil ? 0.45 : 1) : 0
+      LAMP.power.value = lampLevel
+      world.lamp.intensity = lampLevel * 145
+    }
     doorsTick(dt)
+    lightState.gain.F = ending?.kind === 'a' && ending.elapsed >= 4.8 && ending.elapsed < 5.2 ? 0.55 : 1
     lightsTick(dt)
+    if (clearElapsed >= 0) {
+      if (playing) clearElapsed += dt
+      const clear = clearState(clearElapsed)
+      weather.rain.setIntensity(clear.rain)
+      ambient.setRain(clear.rain)
+      atmosphere.setDensity(clear.fog)
+      atmosphere.sky.setClear(clear.sky)
+    }
+    farField?.update(playing ? dt : 0)
+    if (signalEnabled && beacon && farLight) {
+      const ray = farLight.direction
+      const roofT = (CANOPY.y + CANOPY.thick - camera.position.y) / ray.y
+      const roofX = camera.position.x + ray.x * roofT
+      const roofZ = camera.position.z + ray.z * roofT
+      const blockedByCanopy = roofT > 0 && roofX >= CANOPY.x0 && roofX <= CANOPY.x1 && roofZ >= CANOPY.z0 && roofZ <= CANOPY.z1
+      const observed = world.lights.zone === 'out' && !blockedByCanopy && farLight.observed(camera)
+      const pulse = beacon.update(playing ? dt : 0, playing ? observed : true)
+      farLight.update(camera, pulse.light, clearElapsed < 0 ? 0 : clearState(clearElapsed).sky)
+      if (pulse.completed && storyActive) scenario.emit('farLight:answer:end')
+    }
     weather.update(dt, camera, awake)
     atmosphere.update(dt)
+    if (ending && endingCover) {
+      ending.elapsed += dt
+      const fadeAt = ending.kind === 'a' ? 6 : 1
+      const fade = Math.max(0, Math.min(1, (ending.elapsed - fadeAt) / 5))
+      endingCover.style.opacity = String(fade)
+      if (ending.kind === 'a' && writingCard) {
+        writingCard.textContent = ending.line.slice(0, Math.floor(ending.elapsed * 7))
+        if (ending.elapsed >= fadeAt) writingCard.style.display = 'none'
+        if (ending.elapsed >= 6) {
+          const k = Math.max(0, Math.min(1, (ending.elapsed - 6) / 4))
+          const yawDelta = Math.atan2(Math.sin(ending.toYaw - ending.fromYaw), Math.cos(ending.toYaw - ending.fromYaw))
+          look.setYaw(ending.fromYaw + yawDelta * k, ending.fromPitch + (ending.toPitch - ending.fromPitch) * k)
+        }
+        if (ending.elapsed >= 11.1 && !ending.buzzed) { ending.buzzed = true; ambient.eventCue('buzzer') }
+      }
+      const soundLevel = ending.kind === 'a'
+        ? ending.elapsed < 11.8 ? 1 - fade * 0.9 : Math.max(0, 0.1 * (13 - ending.elapsed) / 1.2)
+        : 1 - fade
+      ambient.setWake(soundLevel)
+      if (ending.elapsed >= (ending.kind === 'a' ? 13 : 8)) location.reload()
+    }
     // Слух - там, где глаз, и смотрит туда же.
     camera.getWorldDirection(earDir)
     ear.x = camera.position.x
@@ -761,7 +1037,16 @@ async function boot(): Promise<void> {
     ear.fx = earDir.x
     ear.fy = earDir.y
     ear.fz = earDir.z
+    const toGlass = new THREE.Vector3(PORTHOLE.x, -3.24, PORTHOLE.z).sub(camera.position)
+    ambient.setFarField(actions.wheel && toGlass.length() < 3.2 && earDir.dot(toGlass.normalize()) > Math.cos(Math.PI / 9) ? 1 : 0)
     ambient.update(dt, ear)
+    if (storyActive && awake && !ending) {
+      saveFor += dt
+      if (saveFor >= 2) {
+        saveFor = 0
+        rememberVisit()
+      }
+    }
     atmosphere.composer.render()
     // Снимок первого кадра после появления - по просьбе из консоли или обмера.
     if (awake && !wasAwake && debug.captureFirst) {
@@ -795,6 +1080,33 @@ async function boot(): Promise<void> {
   tryUnveil()
   // Вторая волна - после первого кадра и открытого экрана входа.
   await yieldTask()
+  const { createInteractions } = await import('./actions')
+  interactions = createInteractions({
+    scene, camera, world, ambient, layer, actions, steps,
+    allow: (target) => epilogue ? target === 'journal' || target === 'flashlight' : scenario.allows(target),
+    journalLines,
+    journalDay: today,
+    onEvent(event) {
+      if (storyActive) {
+        const key = event.kind === 'pick' || event.kind === 'use' || event.kind === 'open' ? `${event.kind}:${event.id}`
+          : event.kind === 'read:open' ? `read:${event.id}` : event.kind
+        scenario.emit(key)
+      }
+      if (event.kind === 'lamp:toggle') {
+        const on = !!event.value
+        LAMP.power.value = on ? 1 : 0
+        world.lamp.intensity = on ? 145 : 0
+        world.post.tube.visible = on
+        world.post.glow.visible = on
+        if (storyActive) {
+          if (!on && signalEnabled) lampWasOff = true
+          else if (lampWasOff) { lampWasOff = false; scenario.emit('lamp:cycle') }
+        }
+      }
+    },
+  })
+  if (inside) interactions.setInside(inside)
+  Object.assign(debug, { actions, steps, interactions })
   buildInside().catch((e: unknown) => console.warn('[vigil] нутро не собралось:', e))
 }
 

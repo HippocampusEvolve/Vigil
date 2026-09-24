@@ -30,7 +30,7 @@ export function createTouch(input: Input, look: SmoothLook) {
     look,
     // касание кнопок оболочки (экран входа, пауза, выход на витрину) не
     // глушим - иначе до `click` дело не дойдёт и из мира будет не выйти
-    passThrough: 'button, a, #gate',
+    passThrough: 'button, a, #gate, #read-card, #read-card *',
     buttons: [
       { id: 'tbAct', label: 'Действие', icon: ICONS.act, press: (down) => down && input.pressAction() },
     ],

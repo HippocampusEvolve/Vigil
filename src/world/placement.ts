@@ -405,7 +405,7 @@ const ROOM_C: Item[] = [
     solid: true,
     looks: { paint: { kind: 'paint', color: 0x6f7a5c }, paint2: { kind: 'paint', color: 0x5d6556 }, glass: { glass: true, color: 0x8a9690, opacity: 0.5 } },
   },
-  { name: 'jerrycan-full', make: (m) => back(jerrycan({ full: true, mats: m })), ...wall('C', 'z0', JERRYCANS_X.full, FLOOR.y, OFF), pin: 'xz', solid: true, looks: { paint: { kind: 'paint', color: 0x5f6e4e } } },
+  { name: 'jerrycan-full', make: (m) => back(jerrycan({ full: true, mats: m })), ...wall('C', 'z0', JERRYCANS_X.full, FLOOR.y, OFF), pin: 'xz', solid: true, loose: true, looks: { paint: { kind: 'paint', color: 0x5f6e4e } } },
   { name: 'jerrycan-empty', make: (m) => back(jerrycan({ full: false, mats: m })), ...wall('C', 'z0', JERRYCANS_X.empty, FLOOR.y, OFF), pin: 'xz', solid: true, looks: { paint: { kind: 'paint', color: 0x5f6e4e } } },
   { name: 'workbench', make: (m) => back(workbench({ mats: m })), ...wall('C', 'x0', WORKBENCH_Z, FLOOR.y, OFF), pin: 'xz', solid: true },
 ]
@@ -720,6 +720,7 @@ const ROOM_I: Item[] = [
     at: (p) => vec(p.top),
     yaw: CRATE_YAW,
     solid: true,
+    loose: true,
     looks: { wood: { kind: 'wood', color: 0x7d6448 } },
   },
   {
@@ -731,7 +732,7 @@ const ROOM_I: Item[] = [
     solid: true,
     looks: { paint: { kind: 'paint', color: 0x7c8c86 } },
   },
-  { name: 'tarp', make: (m) => tarp({ w: CLIMATE.w, d: CLIMATE.d, h: CLIMATE.h, mats: m }), on: 'climate', at: [0, 0, 0], solid: true, looks: { cloth: { kind: 'cloth', color: 0x6f6a4c } } },
+  { name: 'tarp', make: (m) => tarp({ w: CLIMATE.w, d: CLIMATE.d, h: CLIMATE.h, mats: m }), on: 'climate', at: [0, 0, 0], solid: true, loose: true, looks: { cloth: { kind: 'cloth', color: 0x6f6a4c } } },
   {
     // Насосный агрегат вдоль западной стены, перед стояками.
     name: 'pump',
@@ -777,7 +778,7 @@ const ROOM_J: Item[] = [
  * на комнату, а не на каждую стрелку, - иначе нутро, видное с поляны сквозь
  * стены, одно съедает рамку кадра. Этап рук оживит нужные, добавив имя сюда.
  */
-export const LIVE = new Set(['hatch'])
+export const LIVE = new Set(['hatch', 'generator', 'jerrycan-full', 'console', 'recorder', 'crate', 'porthole', 'climate', 'tarp'])
 
 const settle = (items: Item[]): Item[] => items.map((i) => (LIVE.has(i.name) ? i : { ...i, still: true }))
 

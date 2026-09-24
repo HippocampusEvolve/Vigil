@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "rolldown test/run.ts -f esm -d node_modules/.vigil --platform node && node node_modules/.vigil/run.js"
+    "test": "rolldown test/run.ts -f esm -d node_modules/.vigil --platform node && node node_modules/.vigil/run.js",
+    "test:story": "rolldown src/story/walkthrough.test.ts -f esm -d node_modules/.vigil-story --platform node && node node_modules/.vigil-story/walkthrough.test.js"
   },
   "dependencies": {
     "postprocessing": "^6.39.3",
