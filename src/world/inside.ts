@@ -8,7 +8,10 @@
  *
  * Материалы - те же, что у фасада: бетон один на пост изнутри и снаружи,
  * сталь одна на все мелочи. Их программы собраны к первому кадру, и нутро не
- * добавляет ни одной, кроме своих предметов.
+ * добавляет ни одной, кроме трёх своих у предметов (`furnishMaterials`).
+ *
+ * `power` - сила светильников (`lights.glow`): с ней свечение трубок мигает
+ * вместе с их светом. Без неё - та, что отдана `furnishMaterials` раньше.
  */
 
 import * as THREE from 'three'
@@ -23,7 +26,10 @@ export type Inside = {
   solid: THREE.Group
 }
 
-export function* buildInsideSteps(materials: { concrete: THREE.Material; metal: THREE.Material; glass: THREE.Material }): Generator<string, Inside, void> {
+export function* buildInsideSteps(
+  materials: { concrete: THREE.Material; metal: THREE.Material; glass: THREE.Material },
+  power?: { value: number[] },
+): Generator<string, Inside, void> {
   const steps = buildInteriorSteps()
   let interior: Interior
   for (;;) {
@@ -47,7 +53,7 @@ export function* buildInsideSteps(materials: { concrete: THREE.Material; metal: 
   group.add(concrete, metal)
   yield 'нутро'
 
-  const fs = furnishSteps(materials)
+  const fs = furnishSteps(materials, undefined, power)
   let furnish: Furnish
   for (;;) {
     const r = fs.next()
