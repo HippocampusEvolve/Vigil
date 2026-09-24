@@ -223,7 +223,12 @@ async function boot(): Promise<void> {
       heightAt,
       ground: groundUnder,
       waterAt: waterDepth,
-      obstacles: () => world.doors.obstacles(),
+      // Стойки верха перил на полу у люка стоят, только пока он открыт.
+      obstacles: () => {
+        const list = world.doors.obstacles()
+        if (hatchOpen && inside) for (const p of inside.interior.hatchPosts) list.push({ ax: p.x, az: p.z, bx: p.x, bz: p.z, half: p.half, y0: p.y0, y1: p.y1 })
+        return list
+      },
       // Закрытая крышка люка - пол; открытая - проём к лестнице.
       deck: (x, z) => (!hatchOpen && x > HATCH.x0 && x < HATCH.x1 && z > HATCH.z0 && z < HATCH.z1 ? FLOOR.y : null),
     }),
@@ -614,6 +619,7 @@ async function boot(): Promise<void> {
       if (!mesh.isMesh) return
       mesh.material = mesh.name.startsWith('door-glass') ? inMats.glass : inMats.metal
     })
+    built.hatchRail.visible = hatchOpen
     scene.add(built.group)
     inside = built
     insideTree = buildCollision(built.solid, () => {
@@ -679,6 +685,7 @@ async function boot(): Promise<void> {
     /** Открыть люк для проверки: без сюжета он заперт (tech.md, «Загрузчик»). */
     openHatch: () => {
       hatchOpen = true
+      if (inside) inside.hatchRail.visible = true
       const f = inside?.furnish.moving
       for (const side of ['leaf-left', 'leaf-right']) {
         const leaf = f?.get(`hatch/${side}`)
