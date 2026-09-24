@@ -244,7 +244,7 @@ export const FIXTURES: Fixture[] = [
   { id: 'E2', room: 'E', kind: 'tube', x: -3.5, y: 3.3, z: -5.4, color: 0xdfe9e2, behavior: 'dead', intensity: 0, distance: 9, mains: true },
   { id: 'F', room: 'F', kind: 'desk', x: -10.0, y: 1.08, z: -0.62, color: 0xffcd8c, behavior: 'steady', intensity: 1.1, distance: 4, mains: true },
   { id: 'G', room: 'G', kind: 'phyto', x: -15.0, y: 1.2, z: -7.0, color: 0xff4fa8, behavior: 'steady', intensity: 3.4, distance: 8, mains: true },
-  { id: 'I1', room: 'I', kind: 'emergency', x: -11.6, y: -0.85, z: -7.55, color: 0xff2410, behavior: 'steady', intensity: 2.4, distance: 8, mains: false },
+  { id: 'I1', room: 'I', kind: 'emergency', x: -11.6, y: -1.0, z: -7.55, color: 0xff2410, behavior: 'steady', intensity: 2.4, distance: 8, mains: false },
   { id: 'I2', room: 'I', kind: 'emergency', x: -7.6, y: -0.85, z: -0.45, color: 0xff2410, behavior: 'steady', intensity: 2.4, distance: 8, mains: false },
   { id: 'J', room: 'J', kind: 'cold', x: -3.0, y: -2.2, z: -4.0, color: 0x5a9cff, behavior: 'steady', intensity: 1.6, distance: 6, mains: false },
 ]
