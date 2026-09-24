@@ -580,12 +580,19 @@ async function boot(): Promise<void> {
     // переходят на них - снаружи поверхность та же.
     const steps = buildInsideSteps(inMats, world.lights.glow)
     let built: Inside
+    // Самый долгий шаг сборки - в журнал: шаг нутра - задача главного потока
+    // во время игры, и рамка у неё та же, 60 мс.
+    let stepMax = 0
+    let stepName = ''
     for (;;) {
+      const t = performance.now()
       const r = steps.next()
+      const spent = performance.now() - t
       if (r.done) {
         built = r.value
         break
       }
+      if (spent > stepMax) [stepMax, stepName] = [spent, r.value]
       await yieldTask()
     }
     // Свои программы у нутра - только у предметов: по одной на задачу.
@@ -624,7 +631,7 @@ async function boot(): Promise<void> {
     inside = built
     insideTree = buildCollision(built.solid, () => {
       const slow = slowestName ? `, дольше всех программа ${slowestName} - ${slowest.toFixed(0)} мс` : ''
-      console.log(`[vigil] нутро готово за ${(performance.now() - t0).toFixed(0)} мс${slow}`)
+      console.log(`[vigil] нутро готово за ${(performance.now() - t0).toFixed(0)} мс, самый долгий шаг ${stepName} - ${stepMax.toFixed(0)} мс${slow}`)
     })
     Object.assign(debug, { inside, insideTree })
   }

@@ -192,6 +192,16 @@ export type Furnish = {
 /** Выше этой отметки над полом предмет телу не мешает. */
 const REACH = 1.8
 
+/**
+ * Бюджет шага сборки, мс. Шаг кончается после предмета, перебравшего
+ * бюджет, то есть шаг - это бюджет плюс один предмет. Шаг - задача главного
+ * потока во время игры, и рамка у неё входная, 60 мс. Самый тяжёлый предмет
+ * (вешалка с плащами) на первом прогоне в браузере - до 30 мс; при бюджете
+ * 12 мс шаги доходили до 56 мс (замер 24.09.2026) и под нагрузкой машины
+ * выходили за рамку.
+ */
+const STEP_MS = 4
+
 /** Непрозрачное, стекло, свечение: три меша на комнату и на подвижную часть. */
 type Kind3 = 'opaque' | 'glass' | 'glow'
 const classOf = (look: Look): Kind3 => ('glass' in look ? 'glass' : 'glow' in look ? 'glow' : 'opaque')
@@ -427,7 +437,7 @@ export function* furnishSteps(
     // проверяет каталог, мир спрашивает, не вошёл ли предмет в стену или в соседа.
     const body = bodyOf(whole)
     if (body) bodies.push({ name: item.name, geometry: body })
-    if (performance.now() - spent > 12) {
+    if (performance.now() - spent > STEP_MS) {
       yield
       spent = performance.now()
     }

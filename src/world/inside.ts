@@ -37,13 +37,13 @@ export function* buildInsideSteps(
 ): Generator<string, Inside, void> {
   const steps = buildInteriorSteps()
   let interior: Interior
-  for (;;) {
+  for (let k = 1; ; k++) {
     const r = steps.next()
     if (r.done) {
       interior = r.value
       break
     }
-    yield 'нутро'
+    yield `нутро ${k}`
   }
   const group = new THREE.Group()
   group.name = 'inside'
@@ -61,7 +61,7 @@ export function* buildInsideSteps(
   hatchRail.castShadow = true
   hatchRail.visible = false
   group.add(concrete, metal, hatchRail)
-  yield 'нутро'
+  yield 'нутро: сборка'
 
   const fs = furnishSteps(materials, undefined, power)
   let furnish: Furnish
