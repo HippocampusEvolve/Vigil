@@ -52,6 +52,7 @@ import { buildCollision, type Collision } from './world/collision'
 import { groundUnder, heightAt, waterDepth } from './world/terrain'
 import { EYE_LOW, FLASHLIGHT_REST, FOCUS_FOV, HATCH, FLOOR, DOOR } from './world/layout'
 import { installIndoorChunks } from './world/indoor'
+import { furnishMaterials } from './world/furnish'
 import { buildInsideSteps, type Inside } from './world/inside'
 import { postMaterials } from './world/post'
 import { zoneAt } from './world/zones'
@@ -473,6 +474,30 @@ async function boot(): Promise<void> {
       mesh.material = was
       await yieldTask()
     }
+    // Три программы предметов нутра - на держателях того же вида, что их
+    // пачки: цвет по вершинам (у стекла с прозрачностью, из четырёх
+    // компонент), поверхность `surf`, приём тени у всех, кроме свечения.
+    // Иначе первая программа предметов - секунда с лишним одной задачей.
+    {
+      const fm = furnishMaterials(world.lights.glow)
+      for (const [kind, m, size] of [
+        ['opaque', fm.opaque, 3],
+        ['glass', fm.glass, 4],
+        ['glow', fm.glow, 3],
+      ] as const) {
+        const geo = new THREE.BoxGeometry(0.1, 0.1, 0.1)
+        const n = geo.getAttribute('position').count
+        geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * size), size))
+        geo.setAttribute('surf', new THREE.BufferAttribute(new Float32Array(n * 4), 4))
+        const holder = new THREE.Mesh(geo, m)
+        holder.receiveShadow = kind !== 'glow'
+        const t = performance.now()
+        compileNow(holder)
+        note(`предметы: ${kind}`, t)
+        geo.dispose()
+        await yieldTask()
+      }
+    }
     // Проходы кадра: у каждого свои полноэкранные материалы.
     const flat = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
     for (const [m, toScreen] of atmosphere.postMaterials()) {
@@ -540,7 +565,7 @@ async function boot(): Promise<void> {
     const t0 = performance.now()
     // Материалы с нутром (`inMats`, собраны в прогреве): фасад и створки
     // переходят на них - снаружи поверхность та же.
-    const steps = buildInsideSteps(inMats)
+    const steps = buildInsideSteps(inMats, world.lights.glow)
     let built: Inside
     for (;;) {
       const r = steps.next()
@@ -599,6 +624,7 @@ async function boot(): Promise<void> {
   const doorX = (DOOR.x0 + DOOR.x1) / 2
   let entryUnlocked = false
   let awayFor = 0
+  const DOOR_IDS = ['entry', 'inner', 'med', 'gen', 'cold'] as const
   function doorsTick(dt: number): void {
     const ready = insideTree?.ready() ?? false
     const d = Math.hypot(player.pos.x - doorX, (player.pos.z - -0.15) * 1.2)
@@ -614,7 +640,9 @@ async function boot(): Promise<void> {
       if (awayFor > 3 && d > 2.2) world.doors.move('entry', 0, 0.8)
     }
     world.doors.update(dt)
-    world.doors.drain()
+    for (const e of world.doors.drain()) ambient.doorEvent(e.id, e.kind, e.speed)
+    for (const id of DOOR_IDS) ambient.setDoor(id, world.doors.open(id))
+    ambient.setDoor('hatch', hatchOpen ? 1 : 0)
   }
 
   /** Поднять фонарь: пока рук нет, он поднимается, когда игрок подошёл вплотную. */
@@ -630,9 +658,10 @@ async function boot(): Promise<void> {
     lightState.y = camera.position.y
     lightState.z = camera.position.z
     lightState.carried = world.flashlight.carried
-    for (const id of ['entry', 'inner', 'med', 'gen', 'cold'] as const) lightState.doors[id] = world.doors.open(id)
+    for (const id of DOOR_IDS) lightState.doors[id] = world.doors.open(id)
     lightState.doors.hatch = hatchOpen ? 1 : 0
     world.lights.update(dt, lightState, camera)
+    ambient.setLights(world.lights.power)
     // Туман и свет неба идут за зоной игрока: внутри - своя взвесь, внизу - красная.
     const z = world.lights.zone
     atmosphere.setInterior(z === 'out' ? 0 : 1, z === 'I' || z === 'J' ? 1 : 0)
