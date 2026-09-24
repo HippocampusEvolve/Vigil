@@ -52,8 +52,10 @@ import { buildCollision, type Collision } from './world/collision'
 import { groundUnder, heightAt, waterDepth } from './world/terrain'
 import { EYE_LOW, FLASHLIGHT_REST, FOCUS_FOV, HATCH, FLOOR, DOOR } from './world/layout'
 import { installIndoorChunks } from './world/indoor'
-import { furnishMaterials } from './world/furnish'
-import { buildInsideSteps, type Inside } from './world/inside'
+// Нутро с каталогом предметов - отдельный кусок сборки (`buildInside`): здесь
+// только его тип и материалы предметов для прогрева.
+import { furnishMaterials } from './world/furnish-materials'
+import type { Inside } from './world/inside'
 import { postMaterials } from './world/post'
 import { zoneAt } from './world/zones'
 import { createWeather, type Weather } from './weather'
@@ -221,7 +223,12 @@ async function boot(): Promise<void> {
       heightAt,
       ground: groundUnder,
       waterAt: waterDepth,
-      obstacles: () => world.doors.obstacles(),
+      // Стойки верха перил на полу у люка стоят, только пока он открыт.
+      obstacles: () => {
+        const list = world.doors.obstacles()
+        if (hatchOpen && inside) for (const p of inside.interior.hatchPosts) list.push({ ax: p.x, az: p.z, bx: p.x, bz: p.z, half: p.half, y0: p.y0, y1: p.y1 })
+        return list
+      },
       // Закрытая крышка люка - пол; открытая - проём к лестнице.
       deck: (x, z) => (!hatchOpen && x > HATCH.x0 && x < HATCH.x1 && z > HATCH.z0 && z < HATCH.z1 ? FLOOR.y : null),
     }),
@@ -561,18 +568,31 @@ async function boot(): Promise<void> {
   // --- Вторая волна: нутро --------------------------------------------------
   // Собирается после первого кадра порциями, пока игрок идёт к посту: до
   // двери ему не меньше двух минут (tech.md, «Порядок загрузки»).
+  // Код нутра - каталог предметов ядра, опись и комнаты - едет отдельным
+  // куском сборки и только теперь: это треть бандла мира, и в критическом
+  // пути входа он стоил сотню миллисекунд сети холодному заходу и задачу
+  // разбора тёплому (замер 24.09.2026). Service worker кладёт кусок в кэш
+  // оболочки вместе с остальными (vite.config.js), так что без сети он есть.
   async function buildInside(): Promise<void> {
     const t0 = performance.now()
+    const { buildInsideSteps } = await import('./world/inside')
     // Материалы с нутром (`inMats`, собраны в прогреве): фасад и створки
     // переходят на них - снаружи поверхность та же.
     const steps = buildInsideSteps(inMats, world.lights.glow)
     let built: Inside
+    // Самый долгий шаг сборки - в журнал: шаг нутра - задача главного потока
+    // во время игры, и рамка у неё та же, 60 мс.
+    let stepMax = 0
+    let stepName = ''
     for (;;) {
+      const t = performance.now()
       const r = steps.next()
+      const spent = performance.now() - t
       if (r.done) {
         built = r.value
         break
       }
+      if (spent > stepMax) [stepMax, stepName] = [spent, r.value]
       await yieldTask()
     }
     // Свои программы у нутра - только у предметов: по одной на задачу.
@@ -606,11 +626,12 @@ async function boot(): Promise<void> {
       if (!mesh.isMesh) return
       mesh.material = mesh.name.startsWith('door-glass') ? inMats.glass : inMats.metal
     })
+    built.hatchRail.visible = hatchOpen
     scene.add(built.group)
     inside = built
     insideTree = buildCollision(built.solid, () => {
       const slow = slowestName ? `, дольше всех программа ${slowestName} - ${slowest.toFixed(0)} мс` : ''
-      console.log(`[vigil] нутро готово за ${(performance.now() - t0).toFixed(0)} мс${slow}`)
+      console.log(`[vigil] нутро готово за ${(performance.now() - t0).toFixed(0)} мс, самый долгий шаг ${stepName} - ${stepMax.toFixed(0)} мс${slow}`)
     })
     Object.assign(debug, { inside, insideTree })
   }
@@ -671,6 +692,7 @@ async function boot(): Promise<void> {
     /** Открыть люк для проверки: без сюжета он заперт (tech.md, «Загрузчик»). */
     openHatch: () => {
       hatchOpen = true
+      if (inside) inside.hatchRail.visible = true
       const f = inside?.furnish.moving
       for (const side of ['leaf-left', 'leaf-right']) {
         const leaf = f?.get(`hatch/${side}`)
@@ -773,7 +795,7 @@ async function boot(): Promise<void> {
   tryUnveil()
   // Вторая волна - после первого кадра и открытого экрана входа.
   await yieldTask()
-  void buildInside()
+  buildInside().catch((e: unknown) => console.warn('[vigil] нутро не собралось:', e))
 }
 
 void boot()

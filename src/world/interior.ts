@@ -47,6 +47,20 @@ export type Interior = {
   bodies: Array<{ name: string; geometry: THREE.BufferGeometry }>
   /** Твёрдое для тела: куски стен вокруг проёмов, марш, перила. */
   colliders: THREE.BufferGeometry
+  /**
+   * Верх перил над люком: стойка у верхней проступи, поручень от следующей
+   * стойки до кромки люка и дальше над полом, стойки на полу. Закрытая крышка
+   * легла бы на них, поэтому они стоят, только пока люк открыт (main.ts,
+   * `openHatch`); сталь та же, что `metal`. Под закрытой крышкой поручень
+   * кончается на стойке ниже неё.
+   */
+  hatchRail: THREE.BufferGeometry
+  /**
+   * Стойки верха перил на полу поста - твёрдое, пока люк открыт: столбик в
+   * плане (x, z, полуширина) и высоты. В дерево коллизий не идут: оно одно на
+   * оба положения крышки.
+   */
+  hatchPosts: Array<{ x: number; z: number; half: number; y0: number; y1: number }>
 }
 
 /** Выше этой отметки над полом своего яруса деталь телу не достать. */
@@ -54,6 +68,13 @@ const REACH = 1.8
 
 /** Радиус проёма иллюминатора в полу низа: обод предмета садится в него. */
 export const PORTHOLE_HOLE = PORTHOLE.d / 2 + 0.1
+
+/**
+ * Сколько закрытая крышка люка уходит под пол: лист 16 мм и рамка 26 мм под
+ * ним (каталог ядра, `hatchLid`). Ниже этого, с сантиметром запаса, кончается
+ * то, что стоит при закрытом люке.
+ */
+const HATCH_UNDER = 0.042
 
 /** Подъём ступени и нижняя проступь марша. */
 export const RISE = (FLOOR.y - LOWER.floor) / STAIRS.rises
@@ -143,10 +164,12 @@ export function* buildInteriorSteps(): Generator<void, Interior, void> {
   const parts: Part[] = []
   const concrete = new Pieces()
   const metal = new Pieces()
+  const rail = new Pieces()
   const solid: Box6[] = []
+  const hatchPosts: Interior['hatchPosts'] = []
   const note = (name: string, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number): void => {
     parts.push({ name, x0, x1, y0, y1, z0, z1 })
-    for (const list of [concrete, metal]) while (list.names.length < list.length) list.names.push(name)
+    for (const list of [concrete, metal, rail]) while (list.names.length < list.length) list.names.push(name)
   }
   /** Твёрдое: рамка, если до неё достаёт тело своего яруса. */
   const hard = (b: Box6, floor: number = FLOOR.y): void => {
@@ -346,28 +369,37 @@ export function* buildInteriorSteps(): Generator<void, Interior, void> {
 
     // Перила: стойки по обе стороны и поручень вдоль уклона; сверху поручень
     // выходит над полом поста, чтобы за него взяться, спускаясь.
+    //
+    // Всё, что выше низа закрытой крышки (стойка у верхней проступи, поручень
+    // выше второй стойки, стойка на полу), - отдельный верх (`rail`): крышка
+    // ложится вровень с полом, и закрытая она прошла бы сквозь него. Верх
+    // стоит, пока люк открыт; нижний поручень кончается на второй стойке, а
+    // та целиком под крышкой (проверено ниже).
     const RAIL = 0.9
     for (const x of [STAIRS.x0 + 0.03, STAIRS.x1 - 0.03]) {
       const posts: THREE.Vector3[] = []
       for (const k of [1, 4, 7, 10, n]) {
         const y = FLOOR.y - k * RISE
         const z = STAIRS.top - (k - 0.5) * STAIRS.tread
-        metal.push(paint(box(x - 0.015, x + 0.015, y, y + RAIL, z - 0.015, z + 0.015), PAINT.steel))
+        ;(k === 1 ? rail : metal).push(paint(box(x - 0.015, x + 0.015, y, y + RAIL, z - 0.015, z + 0.015), PAINT.steel))
         posts.push(new THREE.Vector3(x, y + RAIL, z))
       }
       const a = posts[0]
+      const cut = posts[1]
       const b = posts[posts.length - 1]
+      if (cut.y + 0.02 > FLOOR.y - HATCH_UNDER - 0.01) throw new Error('interior: нижний поручень не уходит под закрытую крышку люка')
       // Поручень идёт по уклону до кромки люка и дальше над полом поста, к
       // стойке на полу: за него берутся, начиная спуск.
       const dir = new THREE.Vector3().subVectors(a, b).normalize()
       const up = a.clone().addScaledVector(dir, (STAIRS.top - a.z) / dir.z)
       const TOP_POST = STAIRS.top + 0.2
       const tip = new THREE.Vector3(x, FLOOR.y + RAIL, TOP_POST)
-      metal.push(paint(pipe(b.clone().addScaledVector(dir, -0.1), up, 0.02, 8), PAINT.steel))
-      metal.push(paint(pipe(up, tip, 0.02, 8), PAINT.steel))
-      metal.push(paint(box(x - 0.015, x + 0.015, FLOOR.y, FLOOR.y + RAIL - 0.02, TOP_POST - 0.015, TOP_POST + 0.015), PAINT.steel))
+      metal.push(paint(pipe(b.clone().addScaledVector(dir, -0.1), cut, 0.02, 8), PAINT.steel))
+      rail.push(paint(pipe(cut, up, 0.02, 8), PAINT.steel))
+      rail.push(paint(pipe(up, tip, 0.02, 8), PAINT.steel))
+      rail.push(paint(box(x - 0.015, x + 0.015, FLOOR.y, FLOOR.y + RAIL - 0.02, TOP_POST - 0.015, TOP_POST + 0.015), PAINT.steel))
       note(`перила ${x.toFixed(2)}`, x - 0.03, x + 0.03, lfloor, FLOOR.y + RAIL, foot, TOP_POST + 0.03)
-      solid.push([x - 0.03, x + 0.03, FLOOR.y, FLOOR.y + RAIL, TOP_POST - 0.03, TOP_POST + 0.03])
+      hatchPosts.push({ x, z: TOP_POST, half: 0.03, y0: FLOOR.y, y1: FLOOR.y + RAIL })
     }
   }
 
@@ -432,8 +464,9 @@ export function* buildInteriorSteps(): Generator<void, Interior, void> {
   yield
 
   // --- Сборка ---------------------------------------------------------------------------
+  // Тела для проверки - с верхом перил: проверка смотрит мир с открытым люком.
   const byName = new Map<string, THREE.BufferGeometry[]>()
-  for (const list of [concrete, metal]) {
+  for (const list of [concrete, metal, rail]) {
     list.forEach((g, i) => {
       const name = list.names[i] ?? 'без имени'
       byName.set(name, [...(byName.get(name) ?? []), g])
@@ -446,5 +479,7 @@ export function* buildInteriorSteps(): Generator<void, Interior, void> {
     parts,
     bodies,
     colliders: merge(solid.map((b) => box(...b))),
+    hatchRail: merge(rail),
+    hatchPosts,
   }
 }

@@ -105,13 +105,6 @@ const CAGE_DROP = 0.1
 /** Длина светящейся части трубки 1.25 м без патронов (`tubeLength`). */
 const TUBE_LIGHT = 1.19
 
-/**
- * Лампа насосной у задней стены опущена под трубу, идущую вдоль стены
- * (interior.ts, трубы низа): кронштейн на высоте светильника прошёл бы сквозь
- * неё. Тест держит это расхождение в списке, пока точку не поправят.
- */
-const UNDER_PIPE = 0.15
-
 /** Тамбур: вешалка посередине западной стены, сапоги под плащами, скамья у фасада. */
 const COAT_BOARD = { y: 1.75, hooks: 5, w: 1.3 }
 const BOOTS_Z = [-1.0, -1.32, -1.64, -1.96]
@@ -326,7 +319,7 @@ function vaultTube(name: string, id: FixtureId, looks: Palette): Item {
 }
 
 /** Лампа в сетке на стене: колба в точке `at`, пластина на грани стены. */
-function wallCage(name: string, id: FixtureId, room: RoomId, w: Wall, dy = 0): Item {
+function wallCage(name: string, id: FixtureId, room: RoomId, w: Wall): Item {
   const f = fixture(id)
   const r = ROOMS[room]
   const z = w === 'z0' ? r.z0 : r.z1
@@ -336,7 +329,7 @@ function wallCage(name: string, id: FixtureId, room: RoomId, w: Wall, dy = 0): I
       const l = cageLamp({ mount: 'wall', mats: m })
       return { ...l, point: new THREE.Vector3(l.bulb.x, l.bulb.y, 0) }
     },
-    at: [f.x, f.y - dy, z],
+    at: [f.x, f.y, z],
     yaw: FACING[w],
     pin: 'xyz',
     looks: lit(id, { bulb: [f.color, 2.5] }),
@@ -710,7 +703,7 @@ const ROOM_H: Item[] = [
 ]
 
 const ROOM_I: Item[] = [
-  wallCage('lamp-I1', 'I1', 'I', 'z0', UNDER_PIPE),
+  wallCage('lamp-I1', 'I1', 'I', 'z0'),
   wallCage('lamp-I2', 'I2', 'I', 'z1'),
   {
     // Иллюминатор: обод садится в круглый проём пола.
@@ -829,6 +822,5 @@ export const LAMPS: Record<FixtureId, string> = {
 export const LAMP_APART: Partial<Record<FixtureId, string>> = {
   F: 'свет под абажуром, на ладонь ниже лампочки: круг на столе, а не на потолке',
   G: 'стеллаж тылом к стене, свет перед полками',
-  I1: 'кронштейн на высоте светильника прошёл бы сквозь трубу у задней стены; лампа ниже, до правки точки',
   J: 'трубка под потолком, свет у пола над капсулами',
 }

@@ -24,6 +24,11 @@ export type Inside = {
   furnish: Furnish
   /** Твёрдое нутра одним мешем: из него строится второе дерево коллизий. */
   solid: THREE.Group
+  /**
+   * Верх перил над люком (`Interior.hatchRail`): виден, только пока люк
+   * открыт, - закрытая крышка легла бы на него. Видимость ставит main.ts.
+   */
+  hatchRail: THREE.Mesh
 }
 
 export function* buildInsideSteps(
@@ -32,13 +37,13 @@ export function* buildInsideSteps(
 ): Generator<string, Inside, void> {
   const steps = buildInteriorSteps()
   let interior: Interior
-  for (;;) {
+  for (let k = 1; ; k++) {
     const r = steps.next()
     if (r.done) {
       interior = r.value
       break
     }
-    yield 'нутро'
+    yield `нутро ${k}`
   }
   const group = new THREE.Group()
   group.name = 'inside'
@@ -50,8 +55,13 @@ export function* buildInsideSteps(
   metal.name = 'inside-metal'
   metal.receiveShadow = true
   metal.castShadow = true
-  group.add(concrete, metal)
-  yield 'нутро'
+  const hatchRail = new THREE.Mesh(interior.hatchRail, materials.metal)
+  hatchRail.name = 'inside-hatch-rail'
+  hatchRail.receiveShadow = true
+  hatchRail.castShadow = true
+  hatchRail.visible = false
+  group.add(concrete, metal, hatchRail)
+  yield 'нутро: сборка'
 
   const fs = furnishSteps(materials, undefined, power)
   let furnish: Furnish
@@ -76,5 +86,5 @@ export function* buildInsideSteps(
     props.name = 'furnish-colliders'
     solid.add(props)
   }
-  return { group, interior, furnish, solid }
+  return { group, interior, furnish, solid, hatchRail }
 }
