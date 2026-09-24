@@ -21,42 +21,55 @@
  *                       каждого певца, двенадцать певцов по опушке, общая
  *                       медленная волна 4-8 с; обрываются по действию;
  *   ручей               вдоль западного края;
- *   генератор           глухо из-за стены: снаружи срез 300 Гц и -12 дБ.
+ *   генератор           глухо из-за стены: снаружи срез 300 Гц и -12 дБ. Он
+ *                       живёт в генераторной и слышен по графу зон, как всё
+ *                       нутро (`indoor.ts`), но в списке поляны остаётся: с
+ *                       поляны его слышно.
  * Редкие: скрип стволов, плоды, далёкая птица раз в 45-90 с. Гром приходит
  * только по вызову.
+ *
+ * Все слои поляны звучат в шины улицы (`shade.ts`), а не прямо в микшер:
+ * изнутри поста улица слышна через дверь или стену одним общим затенением, и
+ * слои ставятся не по настоящему уху, а по уху у того проёма или стены,
+ * откуда улица слышна.
  */
 
-import {
-  BLOCK,
-  CANOPY,
-  CLEARING,
-  ENTRY_LAMP,
-  GENERATOR,
-  GENERATOR_ROOM,
-  GUTTER,
-  HANGAR,
-  PLINTH,
-  STREAM,
-} from '../world/layout'
+import { BLOCK, CANOPY, CLEARING, ENTRY_LAMP, GUTTER, HANGAR, PLINTH, STREAM } from '../world/layout'
 import type { Bank } from './bank'
 import { db, LOOP_RMS, rng } from './dsp'
-import { LEVEL } from './levels'
-import type { Mixer } from './mixer'
-import { alongX, alongZ, distance, falloff, inside, nearestInRect, panOf, qOf, Spot, type Ear, type Point } from './place'
+import type { Hearing } from './hear'
+import { LEVEL, SEND } from './levels'
+import { HUM } from './machines'
+import type { Bus } from './mixer'
+import { alongX, alongZ, distance, falloff, nearestInRect, panOf, Spot, type Ear, type How, type Point } from './place'
 import type { Synth } from './synth'
 
-export type LayerName = 'rainLeaves' | 'rainConcrete' | 'curtain' | 'gutter' | 'lamp' | 'insects' | 'stream' | 'generator'
+export type { How } from './place'
 
-/** Все слои поляны, в порядке подключения: сперва то, что слышно из точки появления. */
-export const OUTDOOR: readonly LayerName[] = ['rainLeaves', 'insects', 'lamp', 'generator', 'gutter', 'curtain', 'rainConcrete', 'stream']
+/** Слои самой поляны. Генератор слышен с поляны, но живёт в нутре (`indoor.ts`). */
+export type OutdoorName = 'rainLeaves' | 'rainConcrete' | 'curtain' | 'gutter' | 'lamp' | 'insects' | 'stream'
 
-export type How = 'now' | 'fade' | 'glide'
+/** Всё, что слышно на поляне, в порядке подключения: сперва то, что слышно из точки появления. */
+export const OUTDOOR = ['rainLeaves', 'insects', 'lamp', 'generator', 'gutter', 'curtain', 'rainConcrete', 'stream'] as const satisfies ReadonlyArray<
+  OutdoorName | 'generator'
+>
 
 export interface Layer {
-  /** Поставить слой по уху. */
-  place(ear: Ear, how: How): void
+  /**
+   * Поставить слой по уху. Слои поляны берут ухо у проёма или стены, откуда
+   * слышна улица; слои нутра - настоящее ухо и граф зон (`h`).
+   */
+  place(ear: Ear, how: How, h: Hearing): void
+  /** Живёт внутри: ставится по настоящему уху и по графу зон. */
+  inside?: boolean
   /** Обрыв (есть только у насекомых): см. `cut` ниже. */
   cut?(at: number): void
+  /** Часы кадра: у слоёв с редкими событиями. */
+  tick?(dt: number): void
+  /** Сила света 0..1: у трубок гул идёт за ней. */
+  light?(power: number): void
+  /** Позывной в эфире (у приёмника). */
+  callsign?(pattern: string | null): void
 }
 
 /** Общее для всех слоёв: сила дождя 0..1. От неё зависят и лужи, и завеса, и водосток. */
@@ -81,7 +94,7 @@ const POST = { x0: HANGAR.x0, x1: BLOCK.x1, z0: Math.min(HANGAR.z0, BLOCK.z0), z
 const FRONT = { x0: Math.min(CANOPY.x0, PLINTH.x0), x1: CANOPY.x1, z0: CANOPY.z0, z1: CANOPY.z1 }
 
 /** Звук петли по кругу, с места `offset` секунд. */
-function loop(ctx: BaseAudioContext, buffer: AudioBuffer, offset = 0, rate = 1): AudioBufferSourceNode {
+export function loop(ctx: BaseAudioContext, buffer: AudioBuffer, offset = 0, rate = 1): AudioBufferSourceNode {
   const s = ctx.createBufferSource()
   s.buffer = buffer
   s.loop = true
@@ -90,7 +103,7 @@ function loop(ctx: BaseAudioContext, buffer: AudioBuffer, offset = 0, rate = 1):
   return s
 }
 
-function gain(ctx: BaseAudioContext, v: number): GainNode {
+export function gain(ctx: BaseAudioContext, v: number): GainNode {
   const g = ctx.createGain()
   g.gain.value = v
   return g
@@ -100,11 +113,11 @@ function gain(ctx: BaseAudioContext, v: number): GainNode {
  * Стерео из двух моно-петель разной длины. Каналы слегка перетекают друг в
  * друга: совсем порознь дождь звучит двумя дождями по бокам головы.
  */
-function stereoLoop(ctx: BaseAudioContext, left: AudioBuffer, right: AudioBuffer): { out: AudioNode; rms: number } {
+export function stereoLoop(ctx: BaseAudioContext, left: AudioBuffer, right: AudioBuffer, rate = 1): { out: AudioNode; rms: number } {
   const bleed = 0.35
   const merger = ctx.createChannelMerger(2)
-  const l = loop(ctx, left)
-  const r = loop(ctx, right)
+  const l = loop(ctx, left, 0, rate)
+  const r = loop(ctx, right, 0, rate)
   l.connect(gain(ctx, 1)).connect(merger, 0, 0)
   l.connect(gain(ctx, bleed)).connect(merger, 0, 1)
   r.connect(gain(ctx, 1)).connect(merger, 0, 1)
@@ -114,7 +127,7 @@ function stereoLoop(ctx: BaseAudioContext, left: AudioBuffer, right: AudioBuffer
 
 // --- Слои ------------------------------------------------------------------------
 
-function rainLeaves(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
+function rainLeaves(mix: Bus, bank: Bank, weather: Weather): Layer | null {
   const ctx = mix.ctx
   const l = bank.buffer(ctx, 'leavesL')
   const r = bank.buffer(ctx, 'leavesR')
@@ -136,7 +149,7 @@ function rainLeaves(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
   }
 }
 
-function rainConcrete(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
+function rainConcrete(mix: Bus, bank: Bank, weather: Weather): Layer | null {
   const ctx = mix.ctx
   const l = bank.buffer(ctx, 'concreteL')
   const r = bank.buffer(ctx, 'concreteR')
@@ -158,7 +171,7 @@ function rainConcrete(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
   }
 }
 
-function curtain(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
+function curtain(mix: Bus, bank: Bank, weather: Weather): Layer | null {
   const ctx = mix.ctx
   const buf = bank.buffer(ctx, 'curtain')
   if (!buf) return null
@@ -179,7 +192,7 @@ function curtain(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
  */
 const GUTTER_RMS = 0.116
 
-function gutter(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
+function gutter(mix: Bus, bank: Bank, weather: Weather): Layer | null {
   const ctx = mix.ctx
   const brown = bank.buffer(ctx, 'brown')
   const wander = bank.buffer(ctx, 'wander')
@@ -203,17 +216,10 @@ function gutter(mix: Mixer, bank: Bank, weather: Weather): Layer | null {
   }
 }
 
-/** Гармоники гула лампы: [множитель к 100 Гц, сила]. */
-const HUM: ReadonlyArray<readonly [number, number]> = [
-  [1, 1],
-  [2, 0.5],
-  [3, 0.28],
-  [4, 0.16],
-]
-
-function lamp(mix: Mixer): Layer {
+/** Гармоники гула лампы - те же, что у трубок нутра (`machines.ts`). */
+function lamp(mix: Bus): Layer {
   const ctx = mix.ctx
-  const spot = new Spot(mix)
+  const spot = new Spot(mix, { wet: SEND.tone })
   const sum = gain(ctx, 0.5)
   for (const [k, a] of HUM) {
     const osc = ctx.createOscillator()
@@ -285,7 +291,7 @@ export function edgePoint(r: () => number, inset: number): Point {
   return { x, y: 0.4, z }
 }
 
-function insects(mix: Mixer): Layer {
+function insects(mix: Bus): Layer {
   const ctx = mix.ctx
   const bus = gain(ctx, 1)
   // Общая медленная волна: хор то набирает, то отпускает.
@@ -356,7 +362,7 @@ function insects(mix: Mixer): Layer {
   }
 }
 
-function stream(mix: Mixer, bank: Bank): Layer | null {
+function stream(mix: Bus, bank: Bank): Layer | null {
   const ctx = mix.ctx
   const buf = bank.buffer(ctx, 'stream')
   if (!buf) return null
@@ -371,57 +377,8 @@ function stream(mix: Mixer, bank: Bank): Layer | null {
   }
 }
 
-/**
- * Генератор за стеной. Затенение по зонам, а не по лучам: в той же комнате -
- * полная полоса и расстояние до самой машины; снаружи - срез и потеря закрытой
- * стены, а расстояние меряется до ближайшей стены комнаты: наружу звучит стена.
- */
-function generator(mix: Mixer, bank: Bank): Layer | null {
-  const ctx = mix.ctx
-  const buf = bank.buffer(ctx, 'engine')
-  const wander = bank.buffer(ctx, 'wander')
-  if (!buf || !wander) return null
-  const spot = new Spot(mix)
-  const src = loop(ctx, buf)
-  // Медленная дрожь хода: скорость петли качается на доли процента.
-  const drift = ctx.createOscillator()
-  drift.frequency.value = 0.17
-  drift.connect(gain(ctx, 0.004)).connect(src.playbackRate)
-  drift.start()
-  loop(ctx, wander, 5, 0.6).connect(gain(ctx, 0.003)).connect(src.playbackRate)
-  const wall = ctx.createBiquadFilter()
-  wall.type = 'lowpass'
-  wall.Q.value = qOf('lowpass', 0.7)
-  wall.frequency.value = LEVEL.wall.cutoff
-  const loss = gain(ctx, db(LEVEL.wall.db))
-  src.connect(wall).connect(loss).connect(spot.input)
-  const base = db(LEVEL.generator.db) / LOOP_RMS
-  let closed = true
-  return {
-    place(ear, how) {
-      const shut = !inside(ear, GENERATOR_ROOM)
-      if (shut !== closed || how === 'now') {
-        closed = shut
-        const t = ctx.currentTime
-        const f = shut ? LEVEL.wall.cutoff : Math.min(20000, ctx.sampleRate * 0.45)
-        const g = shut ? db(LEVEL.wall.db) : 1
-        if (how === 'now') {
-          wall.frequency.setValueAtTime(f, t)
-          loss.gain.setValueAtTime(g, t)
-        } else {
-          wall.frequency.setTargetAtTime(f, t, 0.15)
-          loss.gain.setTargetAtTime(g, t, 0.15)
-        }
-      }
-      const p = shut ? nearestInRect(ear, GENERATOR_ROOM, GENERATOR.y) : GENERATOR
-      const ref = shut ? 1 : LEVEL.generator.ref
-      spot.set(base * falloff(distance(ear, p), ref), panOf(ear, p), how)
-    },
-  }
-}
-
 /** Собрать слой. Пусто, если нужное ему ещё не посчитано: тогда попробуем в следующем кадре. */
-export function makeLayer(name: LayerName, mix: Mixer, bank: Bank, weather: Weather): Layer | null {
+export function makeLayer(name: OutdoorName, mix: Bus, bank: Bank, weather: Weather): Layer | null {
   switch (name) {
     case 'rainLeaves':
       return rainLeaves(mix, bank, weather)
@@ -437,8 +394,6 @@ export function makeLayer(name: LayerName, mix: Mixer, bank: Bank, weather: Weat
       return insects(mix)
     case 'stream':
       return stream(mix, bank)
-    case 'generator':
-      return generator(mix, bank)
   }
 }
 

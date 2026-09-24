@@ -12,8 +12,8 @@
  * очередь автоматизаций не копится.
  */
 
-import type { Mixer } from './mixer'
-import { SEND } from './levels'
+import type { Bus } from './mixer'
+import { SEND, SHADE } from './levels'
 
 /** Ухо: где глаз и куда он смотрит, в сетке мира. */
 export type Ear = { x: number; y: number; z: number; fx: number; fy: number; fz: number }
@@ -27,6 +27,15 @@ export const WRITE_EVERY = 0.25
 const GLIDE = 0.2
 /** Постоянная входа слоя, который подключился на ходу: вплывает, а не щёлкает. */
 const FADE_IN = 0.6
+/** Постоянная сдвига: ухо перешло в другую зону, место источника меняется сразу, без очереди. */
+export const SHIFT = SHADE.tau
+
+/**
+ * Как поставить: 'now' - сразу; 'fade' - первый раз, вплывая; 'glide' -
+ * обычное движение, с порогом и не чаще `WRITE_EVERY`; 'shift' - смена зоны
+ * или двери: без очереди, с постоянной `SHIFT`.
+ */
+export type How = 'now' | 'fade' | 'glide' | 'shift'
 
 /**
  * Добротность для `BiquadFilterNode`. У lowpass и highpass WebAudio понимает Q
@@ -100,7 +109,7 @@ export class Spot {
   private pan = 0
   private at = -Infinity
 
-  constructor(mix: Mixer, o: { out?: AudioNode; wet?: number; stereo?: boolean } = {}) {
+  constructor(mix: Bus, o: { out?: AudioNode; wet?: number; stereo?: boolean } = {}) {
     const ctx = mix.ctx
     this.ctx = ctx
     this.input = ctx.createGain()
@@ -121,12 +130,8 @@ export class Spot {
     }
   }
 
-  /**
-   * Поставить громкость и панораму. `how`: 'now' - сразу (разовый звук и
-   * проверка), 'fade' - первый раз, вплывая, 'glide' - обычное движение, с
-   * порогом и не чаще `WRITE_EVERY`.
-   */
-  set(gain: number, pan: number, how: 'now' | 'fade' | 'glide' = 'glide'): void {
+  /** Поставить громкость и панораму (`How`: сразу, вплывая, плавно или сдвигом). */
+  set(gain: number, pan: number, how: How = 'glide'): void {
     const t = this.ctx.currentTime
     const g = gain * this.lift
     if (how === 'now') {
@@ -136,12 +141,13 @@ export class Spot {
       this.input.gain.setTargetAtTime(g, t, FADE_IN)
       this.panner.pan.setValueAtTime(pan, t)
     } else {
-      if (t - this.at < WRITE_EVERY) return
+      if (how === 'glide' && t - this.at < WRITE_EVERY) return
       const moved = Math.abs(20 * Math.log10(Math.max(gain, 1e-6) / Math.max(this.gain, 1e-6))) > 0.5
       const turned = Math.abs(pan - this.pan) > 0.05
       if (!moved && !turned) return
-      if (moved) this.input.gain.setTargetAtTime(g, t, GLIDE)
-      if (turned) this.panner.pan.setTargetAtTime(pan, t, GLIDE)
+      const tau = how === 'shift' ? SHIFT : GLIDE
+      if (moved) this.input.gain.setTargetAtTime(g, t, tau)
+      if (turned) this.panner.pan.setTargetAtTime(pan, t, tau)
     }
     this.gain = gain
     this.pan = pan

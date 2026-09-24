@@ -119,6 +119,52 @@ export function* bakeDrops(rate: number, count = 12, seed = 31): Generator<void,
 }
 
 /**
+ * Капли в переполненное ведро: ведро полно до краёв, и капля бьёт в воду, а не
+ * в жесть. Та же капля, только ниже (от 660 к 220 Гц) и глуше - верх срезан
+ * около 2.5 кГц, щелчок слабее, - и сразу за ударом «бульк»: пузырь 150-300
+ * Гц, высота которого чуть ползёт вверх. Набор, как у капель поляны.
+ */
+export function* bakeBucket(rate: number, count = 8, seed = 37): Generator<void, Samples[]> {
+  const r = rng(seed)
+  const out: Samples[] = []
+  const sin = sines()
+  // Однополюсный срез около 2.5 кГц.
+  const a = 1 - Math.exp((-2 * Math.PI * 2500) / rate)
+  for (let i = 0; i < count; i++) {
+    const o = dropRecipe(r, 0.55)
+    o.clickAmp *= 0.5
+    const len = Math.round((o.sweep * 1.5 * 1.5 + 0.12) * rate)
+    const d = new Float32Array(len)
+    addDrop(d, 0, rate, r, o)
+    // «Бульк»: пузырь под ударом, вступает через 4-8 мс.
+    const at = Math.round(between(r, 0.004, 0.008) * rate)
+    const f0 = logBetween(r, 150, 260)
+    const k = Math.exp(-6.9078 / (0.07 * rate))
+    const atk = Math.round(0.003 * rate)
+    let env = between(r, 0.55, 0.8)
+    let ph = 0
+    for (let j = 0; at + j < len; j++) {
+      const rise = j < atk ? j / atk : 1
+      d[at + j] += sin[(ph * SIN_SIZE) | 0] * env * rise
+      ph += (f0 * (1 + 0.35 * Math.min(1, j / (0.04 * rate)))) / rate
+      ph -= Math.floor(ph)
+      env *= k
+    }
+    let y = 0
+    let peak = 0
+    for (let j = 0; j < len; j++) {
+      y += a * (d[j] - y)
+      d[j] = y
+      peak = Math.max(peak, Math.abs(y))
+    }
+    for (let j = 0; j < len; j++) d[j] /= peak
+    out.push(d)
+    yield
+  }
+  return out
+}
+
+/**
  * Завеса с кромки навеса: вода собирается на плите и срывается с передней
  * кромки частыми каплями. Половина бьёт в бетон отмостки (короткий шлепок,
  * верх открыт), половина - в лужи под кромкой (капля со звоном).
