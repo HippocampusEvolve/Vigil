@@ -729,8 +729,8 @@ async function boot(): Promise<void> {
     Object.assign(debug, { inside, insideTree })
   }
 
-  // Interior doors stay ajar; the entrance waits for the intercom action.
-  world.doors.prop('inner', 0.95)
+  // Keep the vestibule leaf against the partition so both doorways stay clear.
+  world.doors.prop('inner', 1)
   world.doors.prop('med', 0.9)
   world.doors.prop('gen', 0.85)
   const doorX = (DOOR.x0 + DOOR.x1) / 2
@@ -742,16 +742,18 @@ async function boot(): Promise<void> {
   function doorsTick(dt: number): void {
     const ready = insideTree?.ready() ?? false
     const d = Math.hypot(player.pos.x - doorX, (player.pos.z - -0.15) * 1.2)
-    if (ready && entryReleased && d < 2.4) {
+    // Start opening before a player leaving the corridor reaches the vestibule.
+    // Keeping the leaf at 10% here made it sweep across the player's path.
+    if (ready && entryReleased && d < 3.4) {
       if (!entryUnlocked) {
         world.doors.unlock('entry')
         entryUnlocked = true
       }
-      world.doors.move('entry', d < 1.6 ? 1 : 0.1, 1.3)
+      world.doors.move('entry', 1, 1.6)
       awayFor = 0
     } else if (world.doors.open('entry') > 0) {
       awayFor += dt
-      if (awayFor > 3 && d > 2.2) world.doors.move('entry', 0, 0.8)
+      if (awayFor > 3 && d > 3.6) world.doors.move('entry', 0, 0.8)
     }
     world.doors.update(dt)
     for (const e of world.doors.drain()) ambient.doorEvent(e.id, e.kind, e.speed)

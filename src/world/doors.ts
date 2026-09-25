@@ -167,7 +167,8 @@ export function buildDoors(metal: THREE.Material, glass: THREE.Material) {
     color: LEAF_PAINT.entry,
     handleAt: 0.14,
   })
-  // Внутренняя дверь тамбура: петли у восточного косяка, открывается в тамбур.
+  // Внутренняя дверь тамбура: петли у восточного косяка. В открытом
+  // положении створка лежит вдоль перегородки, не перегораживая тамбур.
   leaf({
     id: 'inner',
     hx: OPENINGS.inner.x1 - F,
@@ -180,7 +181,7 @@ export function buildDoors(metal: THREE.Material, glass: THREE.Material) {
     thick: 0.04,
     into: -1,
     sign: 1,
-    full: 1.66,
+    full: Math.PI - 0.1,
     color: LEAF_PAINT.inner,
   })
   // Медпункт: петли у западного косяка, в медпункт.
