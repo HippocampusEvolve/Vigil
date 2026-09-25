@@ -5,6 +5,7 @@
 
 import './awaken.test'
 import './actions.test'
+import './doors.test'
 import './scenario.test'
 import './furnish.test'
 import './hatch.test'

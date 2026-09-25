@@ -104,9 +104,11 @@ export function buildDoors(metal: THREE.Material, glass: THREE.Material) {
     }
     // Ручка у кромки, с обеих сторон.
     const hu = o.along * (o.width - (o.handleAt ?? 0.1))
+    const handleY0 = o.y0 + 0.98
+    const handleY1 = o.y0 + 1.1
     for (const s of [1, -1]) {
       const z0 = s > 0 ? face : face - o.thick - 0.05
-      parts.push(paint(box(hu - 0.02, hu + 0.02, 0.98, 1.1, z0, z0 + 0.05), PAINT.steel))
+      parts.push(paint(box(hu - 0.02, hu + 0.02, handleY0, handleY1, z0, z0 + 0.05), PAINT.steel))
     }
     const geo = merge(parts)
     if (o.axis === 'x') {
