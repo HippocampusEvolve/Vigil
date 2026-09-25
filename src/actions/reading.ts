@@ -118,11 +118,14 @@ export function createReading(texts: Texts | undefined, action: () => void, jour
       c.font = 'bold 18px system-ui'
       c.fillText('16', 16, h - 22)
     }
-    if (scroll < maxScroll - 4) {
+    if (maxScroll > 4) {
       c.fillStyle = '#34305299'
       c.font = '15px system-ui'
       c.textAlign = 'right'
-      c.fillText('↓', w - 20, h - 17)
+      const down = scroll < maxScroll - 4
+      c.fillText(matchMedia('(pointer: coarse)').matches
+        ? (down ? '↓ проведите пальцем' : '↑ проведите пальцем')
+        : (down ? '↓ колесо / ↑↓' : '↑ колесо / ↑↓'), w - 20, h - 17)
     }
   }
 
@@ -148,11 +151,29 @@ export function createReading(texts: Texts | undefined, action: () => void, jour
     card.setAttribute('aria-label', `Журнал, разворот ${page + 1}`)
     draw()
   }
-  card.addEventListener('wheel', (e) => {
-    e.preventDefault()
-    scroll = Math.max(0, Math.min(Math.max(0, contentHeight - visibleBottom), scroll + e.deltaY))
+  function moveScroll(delta: number): void {
+    scroll = Math.max(0, Math.min(Math.max(0, contentHeight - visibleBottom), scroll + delta))
     draw()
-  }, { passive: false })
+  }
+
+  // Pointer lock sends mouse events to the game canvas even when the paper is
+  // visually on top of it. Listen above both surfaces while reading.
+  document.addEventListener('wheel', (e) => {
+    if (card.hidden) return
+    e.preventDefault()
+    moveScroll(e.deltaY * (e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? card.clientHeight : 1))
+  }, { capture: true, passive: false })
+  addEventListener('keydown', (e) => {
+    if (card.hidden || e.altKey || e.ctrlKey || e.metaKey) return
+    const step = Math.max(48, card.clientHeight * 0.75)
+    const delta = e.code === 'ArrowDown' ? 48 : e.code === 'ArrowUp' ? -48
+      : e.code === 'PageDown' ? step : e.code === 'PageUp' ? -step
+        : e.code === 'Home' ? -contentHeight : e.code === 'End' ? contentHeight : null
+    if (delta === null) return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    moveScroll(delta)
+  }, true)
   card.addEventListener('pointerdown', (e) => {
     dragging = true
     fromY = e.clientY
@@ -163,9 +184,8 @@ export function createReading(texts: Texts | undefined, action: () => void, jour
     if (!dragging) return
     const dy = e.clientY - fromY
     moved += Math.abs(dy)
-    scroll = Math.max(0, Math.min(Math.max(0, contentHeight - visibleBottom), scroll - dy))
+    moveScroll(-dy)
     fromY = e.clientY
-    draw()
   })
   card.addEventListener('pointerup', () => { dragging = false; if (moved < 7) action() })
   addEventListener('resize', () => { if (!card.hidden) draw() })

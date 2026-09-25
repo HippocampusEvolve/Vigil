@@ -94,7 +94,7 @@ export const PAINT = {
   galvanized: 0x8a8f8c,
   rust: 0x5a3a24,
   rustDark: 0x3b2618,
-  shutter: 0x2e2a22,
+  shutter: 0x4a4033,
   enamel: 0x8a1c14,
   box: 0x55605a,
   grille: 0x1f2321,
@@ -369,6 +369,17 @@ export function* buildPostSteps(): Generator<void, Post, void> {
   for (const h of windows) {
     const cx = (h.u0 + h.u1) / 2
     concrete.push(paint(box(h.u0 - 0.06, h.u1 + 0.06, h.v0 - 0.06, h.v0, HANGAR.z1, HANGAR.z1 + 0.06), 0xffffff))
+    // The shutters face the room. Their inner casing must sit in front of the
+    // wall, otherwise the closed openings read as two floating dark blocks.
+    const iz0 = HANGAR.z1 - t - 0.045
+    const iz1 = HANGAR.z1 - t - 0.005
+    metal.push(
+      paint(box(h.u0 - 0.055, h.u0, h.v0 - 0.055, h.v1 + 0.055, iz0, iz1), PAINT.steel),
+      paint(box(h.u1, h.u1 + 0.055, h.v0 - 0.055, h.v1 + 0.055, iz0, iz1), PAINT.steel),
+      paint(box(h.u0, h.u1, h.v1, h.v1 + 0.055, iz0, iz1), PAINT.steel),
+      paint(box(h.u0, h.u1, h.v0 - 0.055, h.v0, iz0, iz1), PAINT.steel),
+      paint(box(h.u0 - 0.08, h.u1 + 0.08, h.v0 - 0.075, h.v0 - 0.055, iz0 - 0.085, iz1), PAINT.galvanized),
+    )
     const fz0 = GLASS_Z - 0.03
     const fz1 = GLASS_Z + 0.02
     metal.push(
@@ -388,7 +399,7 @@ export function* buildPostSteps(): Generator<void, Post, void> {
       const bx = h.u0 + b * (bw + gap)
       metal.push(paint(box(bx, bx + bw, h.v0, h.v1, HANGAR.z1 - t, HANGAR.z1 - t + 0.025), PAINT.shutter))
     }
-    note(`окно ${cx}`, h.u0 - 0.06, h.u1 + 0.06, h.v0 - 0.06, h.v1, HANGAR.z1 - t, HANGAR.z1 + 0.06)
+    note(`окно ${cx}`, h.u0 - 0.08, h.u1 + 0.08, h.v0 - 0.075, h.v1 + 0.055, iz0 - 0.085, HANGAR.z1 + 0.06)
   }
 
   yield
