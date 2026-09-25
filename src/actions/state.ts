@@ -15,6 +15,8 @@ export class Actions {
   headphones = false
   tapePlayed = false
   tapeFinished = false
+  /** Current playback is transient; completion of the story recording is persistent. */
+  tapePlaying = false
   fuel = false
   pulls = 0
   crate = 0
@@ -38,7 +40,9 @@ export class Actions {
   }
 
   finishTape(): ActionEvent[] {
-    if (!this.tapePlayed || this.tapeFinished) return []
+    if (!this.tapePlaying) return []
+    this.tapePlaying = false
+    if (this.tapeFinished) return []
     this.tapeFinished = true
     return [{ kind: 'tape:end' }]
   }
@@ -84,8 +88,9 @@ export class Actions {
       case 'console':
         if (!this.headphones) { this.headphones = true; this.channel = 1; return [{ kind: 'console:wear' }, { kind: 'channel', value: 1 }] }
         this.channel = this.channel % 6 + 1
-        if (this.channel === 4 && this.story && !this.tapePlayed) {
+        if (this.channel === 4 && this.story && !this.tapePlaying) {
           this.tapePlayed = true
+          this.tapePlaying = true
           return [{ kind: 'channel', value: 4 }, { kind: 'tape:start' }]
         }
         return [{ kind: 'channel', value: this.channel }]

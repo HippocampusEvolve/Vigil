@@ -50,6 +50,18 @@ test('walking away puts down a held note and frees movement', () => {
   assert.deepEqual(a.leave(), [])
 })
 
+test('completed tape can be heard again without repeating its story event', () => {
+  const a = new Actions(true)
+  a.tapePlayed = true
+  a.tapeFinished = true
+  for (let channel = 1; channel < 4; channel++) a.act('console')
+  assert.deepEqual(a.act('console'), [{ kind: 'channel', value: 4 }, { kind: 'tape:start' }])
+  assert.equal(a.tapePlaying, true)
+  assert.deepEqual(a.finishTape(), [])
+  assert.equal(a.tapePlaying, false)
+  assert.equal(a.tapeFinished, true)
+})
+
 test('missing story keeps written actions and tape unavailable', () => {
   const a = new Actions(false)
   assert.equal(a.verb('note:x'), null)

@@ -161,7 +161,7 @@ export function createInteractions(opts: {
         break
       }
       case 'channel': {
-        ambient.listen(event.value!, actions.tapePlayed && !actions.tapeFinished && event.value === 4)
+        ambient.listen(event.value!, actions.tapePlaying && event.value === 4)
         const selector = inside?.furnish.moving.get('console/selector')
         if (selector) turn(selector, 1.2 - (event.value! - 1) * 0.48)
         const toggle = inside?.furnish.moving.get(`console/toggle-${event.value}`)
