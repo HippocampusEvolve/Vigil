@@ -132,8 +132,20 @@ export function createInteractions(opts: {
   function emit(event: ActionEvent): void {
     switch (event.kind) {
       case 'pick': world.flashlight.pick(); hands.setCarried(true); break
-      case 'read:open': read.showNote(event.id!); hands.setReading(true); break
-      case 'read:close': read.hide(); hands.setReading(false); break
+      case 'read:open': {
+        read.showNote(event.id!)
+        hands.setReading(true)
+        const paper = hotspots.find((h) => h.id === `note:${event.id}`)?.paper
+        if (paper) paper.visible = false
+        break
+      }
+      case 'read:close': {
+        read.hide()
+        hands.setReading(false)
+        const paper = hotspots.find((h) => h.id === `note:${event.id}`)?.paper
+        if (paper) paper.visible = true
+        break
+      }
       case 'journal:open': read.showJournal(0); break
       case 'journal:page': read.showJournal(event.value!); break
       case 'journal:close': read.hide(); break
@@ -202,10 +214,9 @@ export function createInteractions(opts: {
     const target = selected ?? focus()
     if (!target || !allow(target.id)) return
     for (const event of actions.act(target.id)) emit(event)
-    if (target.paper) target.paper.visible = actions.note !== target.id.slice(5)
   }
   function update(dt: number, stride: number, moving: boolean): void {
-    if (moving && (actions.journal >= 0 || actions.headphones)) for (const e of actions.leave()) emit(e)
+    if (moving && actions.pose) for (const e of actions.leave()) emit(e)
     selected = focus()
     const verb = selected && actions.verb(selected.id)
     hint.textContent = verb ?? ''

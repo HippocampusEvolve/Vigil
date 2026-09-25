@@ -40,6 +40,16 @@ test('actions are gated and advance once per press', () => {
   assert.deepEqual(a.act('lamp:switch'), [{ kind: 'lamp:toggle', value: 1 }])
 })
 
+test('walking away puts down a held note and frees movement', () => {
+  const a = new Actions(true)
+  assert.deepEqual(a.act('note:N01'), [{ kind: 'read:open', id: 'N01' }])
+  assert.equal(a.pose, true)
+  assert.deepEqual(a.leave(), [{ kind: 'read:close', id: 'N01' }])
+  assert.equal(a.pose, false)
+  assert.equal(a.note, null)
+  assert.deepEqual(a.leave(), [])
+})
+
 test('missing story keeps written actions and tape unavailable', () => {
   const a = new Actions(false)
   assert.equal(a.verb('note:x'), null)

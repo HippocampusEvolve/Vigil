@@ -28,9 +28,10 @@ export class Actions {
 
   get pose(): boolean { return this.note !== null || this.journal >= 0 || this.headphones }
 
-  /** Walking away exits a station; the note stays in the hand until returned. */
+  /** A movement attempt puts down paper and leaves a fixed station. */
   leave(): ActionEvent[] {
     const events: ActionEvent[] = []
+    if (this.note) { const id = this.note; this.note = null; events.push({ kind: 'read:close', id }) }
     if (this.journal >= 0) { this.journal = -1; events.push({ kind: 'journal:close' }) }
     if (this.headphones) { this.headphones = false; events.push({ kind: 'console:leave' }) }
     return events

@@ -909,13 +909,14 @@ async function boot(): Promise<void> {
   // убавляется ступенями. Назад не прибавляем: мигание качества хуже его нехватки.
   const FRAME_BUDGET = 1 / 45
   let slowFor = 0
-  let saveFor = 0
+  let lastSaveAt = performance.now()
   function rememberVisit(): void {
     if (!storyActive || ending || awakening.holds()) return
     visit.save({ ...visit.state, position: player.pos.toArray() as [number, number, number], yaw: look.yaw, pitch: look.pitch, weatherSeconds: Math.max(0, Math.min(40, clearElapsed)),
       actions: { flashlight: actions.flashlight, door: actions.door, tapePlayed: actions.tapePlayed, tapeFinished: actions.tapeFinished,
         fuel: actions.fuel, pulls: actions.pulls, crate: actions.crate, wheel: actions.wheel, tarp: actions.tarp,
         automatic: actions.automatic, lamp: actions.lamp } })
+    lastSaveAt = performance.now()
   }
   addEventListener('pagehide', rememberVisit)
   document.addEventListener('visibilitychange', () => { if (document.hidden) rememberVisit() })
@@ -960,7 +961,11 @@ async function boot(): Promise<void> {
     }
     if (storyActive && playing) {
       const zone = zoneAt(player.pos.x, player.pos.y + player.eye, player.pos.z)
-      if (zone !== previousZone) { previousZone = zone; scenario.emit(`zone:${zone}`) }
+      if (zone !== previousZone) {
+        previousZone = zone
+        scenario.emit(`zone:${zone}`)
+        rememberVisit()
+      }
       if (zone === 'B' && world.doors.open('inner') > 0.5) {
         const windowPoint = new THREE.Vector3(doorX, (DOOR.window.y0 + DOOR.window.y1) / 2, 0)
         const toWindow = windowPoint.sub(camera.position).normalize()
@@ -1040,13 +1045,7 @@ async function boot(): Promise<void> {
     const toGlass = new THREE.Vector3(PORTHOLE.x, -3.24, PORTHOLE.z).sub(camera.position)
     ambient.setFarField(actions.wheel && toGlass.length() < 3.2 && earDir.dot(toGlass.normalize()) > Math.cos(Math.PI / 9) ? 1 : 0)
     ambient.update(dt, ear)
-    if (storyActive && awake && !ending) {
-      saveFor += dt
-      if (saveFor >= 2) {
-        saveFor = 0
-        rememberVisit()
-      }
-    }
+    if (storyActive && awake && !ending && frameAt - lastSaveAt >= 2000) rememberVisit()
     atmosphere.composer.render()
     // Снимок первого кадра после появления - по просьбе из консоли или обмера.
     if (awake && !wasAwake && debug.captureFirst) {
